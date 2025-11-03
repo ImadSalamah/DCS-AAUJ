@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
-import 'dart:convert';
-import 'package:provider/provider.dart';
 import '../dashboard/admin_dashboard.dart';
 import '../Admin/add_user_page.dart';
-import '../Admin/manage_study_groups_page.dart';
 import '../Admin/add_student.dart';
 import '../Admin/edit_user_page.dart';
-import '../../providers/language_provider.dart';
+import '../Admin/assign_patients_admin_page.dart';
+import '../Admin/booking_settings_page.dart';
+import '../dashboard/doctors_management_page.dart';
 
 class AdminSidebar extends StatelessWidget {
   final Color primaryColor;
@@ -16,9 +15,10 @@ class AdminSidebar extends StatelessWidget {
   final VoidCallback? onLogout;
   final BuildContext parentContext;
   final bool collapsed;
-  final String Function(BuildContext, String) translate;
+  final String Function(BuildContext, String)? translate; // جعله optional
+  final List<Map<String, dynamic>>? allUsers;
 
-  AdminSidebar({
+  const AdminSidebar({
     super.key,
     required this.primaryColor,
     required this.accentColor,
@@ -27,81 +27,41 @@ class AdminSidebar extends StatelessWidget {
     this.onLogout,
     required this.parentContext,
     this.collapsed = false,
-    required this.translate,
+    this.translate, // جعله optional
+    this.allUsers, required String userRole,
   });
 
-  final Map<String, Map<String, String>> _translations = {
-    'admin_dashboard': {'ar': 'لوحة الإدارة', 'en': 'Admin Dashboard'},
+  // دالة ترجمة افتراضية
+  String _defaultTranslate(BuildContext context, String key) {
+    final Map<String, Map<String, String>> translations = {
+      'home': {'ar': 'الرئيسية', 'en': 'Home'},
     'manage_users': {'ar': 'إدارة المستخدمين', 'en': 'Manage Users'},
     'add_user': {'ar': 'إضافة مستخدم', 'en': 'Add User'},
     'add_user_student': {'ar': 'إضافة طالب طب اسنان', 'en': 'Add Dental Student'},
-    'change_permissions': {'ar': 'تغيير الصلاحيات', 'en': 'Change Permissions'},
+      'assign_patients': {'ar': 'تعيين المرضى للطلاب', 'en': 'Assign Patients to Students'},
+      'manage_doctors': {'ar': 'إدارة الأطباء', 'en': 'Manage Doctors'},
+      'booking_table': {'ar': 'جدول الحجوزات', 'en': 'Booking Table'},
     'admin': {'ar': 'مدير النظام', 'en': 'System Admin'},
-    'home': {'ar': 'الرئيسية', 'en': 'Home'},
-    'settings': {'ar': 'الإعدادات', 'en': 'Settings'},
-    'logout': {'ar': 'تسجيل الخروج', 'en': 'Logout'},
-    'manage_study_groups': {'ar': 'إدارة الشعب الدراسية', 'en': 'Manage Study Groups'},
-    // أضف المزيد حسب الحاجة
-  };
-
-  String _translate(BuildContext context, String key) {
-    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
-    return _translations[key]?[languageProvider.currentLocale.languageCode] ?? key;
+    };
+    
+    // استخدام اللغة الافتراضية (العربية)
+    return translations[key]?['ar'] ?? key;
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Drawer(
-      child: ListView(
-        padding: EdgeInsets.zero,
-        children: [
-          DrawerHeader(
-            decoration: BoxDecoration(color: primaryColor),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                userImageUrl != null && userImageUrl!.isNotEmpty
-                    ? CircleAvatar(
-                        radius: collapsed ? 18 : 32,
-                        backgroundColor: Colors.white,
-                        child: ClipOval(
-                          child: Image.memory(
-                            // Properly decode base64 string to Uint8List
-                            base64Decode(userImageUrl!.replaceFirst('data:image/jpeg;base64,', '')),
-                            width: collapsed ? 36 : 64,
-                            height: collapsed ? 36 : 64,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                      )
-                    : CircleAvatar(
-                        radius: collapsed ? 18 : 32,
-                        backgroundColor: Colors.white,
-                        child: Icon(Icons.person, size: collapsed ? 18 : 32, color: accentColor),
-                      ),
-                if (!collapsed) ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    userName ?? translate(context, 'admin'),
-                    style: const TextStyle(
-                      fontSize: 16,
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    textAlign: TextAlign.center,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    translate(context, 'admin'),
-                    style: const TextStyle(fontSize: 14, color: Colors.white),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          _buildSidebarItem(context, icon: Icons.home, label: translate(context, 'home'), onTap: () {
+  // استخدام الدالة الافتراضية إذا لم يتم توفير translate
+  String _getTranslation(BuildContext context, String key) {
+    return translate?.call(context, key) ?? _defaultTranslate(context, key);
+  }
+
+  // تعريف قائمة الفيتشرات بنفس تلك الموجودة في الداشبورد
+  List<Map<String, dynamic>> _getFeaturesList(BuildContext context) {
+    final usersList = allUsers ?? []; // استخدام قائمة فارغة إذا كان null
+    
+    return [
+      {
+        'icon': Icons.home,
+        'title': _getTranslation(context, 'home'),
+        'onTap': () {
             Navigator.pop(context);
             Navigator.pushAndRemoveUntil(
               parentContext,
@@ -110,24 +70,32 @@ class AdminSidebar extends StatelessWidget {
               ),
               (route) => false,
             );
-          }),
-          _buildSidebarItem(context, icon: Icons.people, label: translate(context, 'manage_users'), onTap: () {
+        },
+      },
+      {
+        'icon': Icons.people,
+        'title': _getTranslation(context, 'manage_users'),
+        'onTap': () {
             Navigator.pop(context);
             Navigator.push(
               parentContext,
               MaterialPageRoute(
                 builder: (context) => EditUserPage(
-                  user: const {},
-                  usersList: const [],
+                user: usersList.isNotEmpty ? usersList.first : {},
+                usersList: usersList,
                   userName: userName,
                   userImageUrl: userImageUrl,
-                  translate: translate,
+                translate: (context, key) => _getTranslation(context, key),
                   onLogout: onLogout ?? () {},
                 ),
               ),
             );
-          }),
-          _buildSidebarItem(context, icon: Icons.person_add, label: translate(context, 'add_user'), onTap: () {
+        },
+      },
+      {
+        'icon': Icons.person_add,
+        'title': _getTranslation(context, 'add_user'),
+        'onTap': () {
             Navigator.pop(context);
             Navigator.push(
               parentContext,
@@ -135,13 +103,18 @@ class AdminSidebar extends StatelessWidget {
                 builder: (context) => AddUserPage(
                   userName: userName,
                   userImageUrl: userImageUrl,
-                  translate: translate,
+                translate: (context, key) => _getTranslation(context, key),
                   onLogout: onLogout ?? () {},
+                allUsers: usersList, // تمرير القائمة
                 ),
               ),
             );
-          }),
-          _buildSidebarItem(context, icon: Icons.person_add_alt_1, label: translate(context, 'add_user_student'), onTap: () {
+        },
+      },
+      {
+        'icon': Icons.person_add_alt_1,
+        'title': _getTranslation(context, 'add_user_student'),
+        'onTap': () {
             Navigator.pop(context);
             Navigator.push(
               parentContext,
@@ -149,46 +122,215 @@ class AdminSidebar extends StatelessWidget {
                 builder: (context) => AddDentalStudentPage(
                   userName: userName,
                   userImageUrl: userImageUrl,
-                  translate: translate,
+                translate: (context, key) => _getTranslation(context, key),
                   onLogout: onLogout ?? () {},
+                allUsers: usersList, // تمرير القائمة
                 ),
               ),
             );
-          }),
-          _buildSidebarItem(context, icon: Icons.group, label: _translate(context, 'manage_study_groups'), onTap: () {
+        },
+      },
+      {
+        'icon': Icons.assignment_ind,
+        'title': _getTranslation(context, 'assign_patients'),
+        'onTap': () {
             Navigator.pop(context);
             Navigator.push(
               parentContext,
               MaterialPageRoute(
-                builder: (context) => AdminManageGroupsPage(
+              builder: (context) => const AssignPatientsAdminPage(),
+            ),
+          );
+        },
+      },
+      {
+        'icon': Icons.medical_services,
+        'title': _getTranslation(context, 'manage_doctors'),
+        'onTap': () {
+          final doctors = usersList.where((user) =>
+            (user['role'] == 'doctor' || user['ROLE'] == 'doctor')
+          ).map((e) => Map<String, dynamic>.from(e)).toList();
+          Navigator.pop(context);
+          Navigator.push(
+            parentContext,
+            MaterialPageRoute(
+              builder: (context) => DoctorsManagementPage(
+                doctors: doctors,
                   userName: userName,
                   userImageUrl: userImageUrl,
-                  translate: translate,
+                translate: (context, key) => _getTranslation(context, key),
                   onLogout: onLogout ?? () {},
-                ),
+                allUsers: usersList,
+              ),
               ),
             );
-          }),
+        },
+      },
+      {
+        'icon': Icons.table_chart,
+        'title': _getTranslation(context, 'booking_table'),
+        'onTap': () {
+          Navigator.pop(context);
+          Navigator.push(
+            parentContext,
+            MaterialPageRoute(
+              builder: (context) => const BookingSettingsPage(),
+            ),
+          );
+        },
+      },
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final features = _getFeaturesList(context);
+    
+    return Drawer(
+      child: Column(
+        children: [
+          _buildHeaderSection(context),
+          Expanded(
+            child: ListView(
+              padding: EdgeInsets.zero,
+              children: [
+                ..._buildFeaturesSection(context, features),
           const Divider(),
-          // تم حذف عنصر تسجيل الخروج من السايد بار
+              ],
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildSidebarItem(BuildContext context, {required IconData icon, required String label, VoidCallback? onTap, Color? iconColor}) {
-    return ListTile(
-      leading: Icon(icon, color: iconColor ?? primaryColor),
+  Widget _buildHeaderSection(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: primaryColor,
+        borderRadius: const BorderRadius.only(
+          bottomLeft: Radius.circular(12),
+          bottomRight: Radius.circular(12),
+        ),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _buildUserAvatar(context),
+          
+          if (!collapsed) ...[
+            const SizedBox(height: 12),
+            Text(
+              userName ?? _getTranslation(context, 'admin'),
+              style: const TextStyle(
+                fontSize: 16,
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              _getTranslation(context, 'admin'),
+              style: const TextStyle(fontSize: 14, color: Colors.white70),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildUserAvatar(BuildContext context) {
+    final hasValidImage = userImageUrl != null && 
+                         userImageUrl!.isNotEmpty && 
+                         userImageUrl!.startsWith('http');
+    
+    if (hasValidImage) {
+      return CircleAvatar(
+        radius: collapsed ? 20 : 36,
+        backgroundColor: Colors.white,
+        child: ClipOval(
+          child: Image.network(
+            userImageUrl!,
+            width: collapsed ? 40 : 72,
+            height: collapsed ? 40 : 72,
+            fit: BoxFit.cover,
+            loadingBuilder: (context, child, loadingProgress) {
+              if (loadingProgress == null) return child;
+              return _buildDefaultAvatar();
+            },
+            errorBuilder: (context, error, stackTrace) => _buildDefaultAvatar(),
+          ),
+        ),
+      );
+    } else {
+      return _buildDefaultAvatar();
+    }
+  }
+
+  Widget _buildDefaultAvatar() {
+    return CircleAvatar(
+      radius: collapsed ? 20 : 36,
+      backgroundColor: Colors.white,
+      child: Icon(
+        Icons.person,
+        size: collapsed ? 20 : 36,
+        color: accentColor,
+      ),
+    );
+  }
+
+  List<Widget> _buildFeaturesSection(BuildContext context, List<Map<String, dynamic>> features) {
+    return features.map((feature) {
+      return _buildSidebarItem(
+        context,
+        icon: feature['icon'] as IconData,
+        label: feature['title'] as String,
+        onTap: feature['onTap'] as VoidCallback,
+      );
+    }).toList();
+  }
+
+  Widget _buildSidebarItem(BuildContext context, {
+    required IconData icon, 
+    required String label, 
+    VoidCallback? onTap, 
+    Color? iconColor
+  }) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Material(
+        borderRadius: BorderRadius.circular(8),
+        color: Colors.transparent,
+        child: ListTile(
+          leading: Icon(
+            icon, 
+            color: iconColor ?? primaryColor,
+            size: collapsed ? 20 : 24,
+          ),
       title: collapsed
           ? null
           : Text(
               label,
-              style: const TextStyle(color: Colors.black), // لون الخط أسود
+                  style: const TextStyle(
+                    color: Colors.black87,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
             ),
       onTap: onTap,
-      contentPadding: collapsed ? const EdgeInsets.symmetric(horizontal: 12) : null,
-      minLeadingWidth: 0,
-      horizontalTitleGap: collapsed ? 0 : null,
+          contentPadding: collapsed 
+              ? const EdgeInsets.symmetric(horizontal: 12) 
+              : const EdgeInsets.symmetric(horizontal: 16),
+          minLeadingWidth: collapsed ? 0 : 24,
+          horizontalTitleGap: collapsed ? 0 : 16,
+          dense: true,
+        ),
+      ),
     );
   }
 }

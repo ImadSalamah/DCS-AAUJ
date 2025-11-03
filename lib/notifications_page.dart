@@ -1,8 +1,8 @@
 // ignore_for_file: use_build_context_synchronously
 
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_database/firebase_database.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'Secretry/account_approv.dart';
 
 class NotificationsPage extends StatefulWidget {
@@ -13,7 +13,6 @@ class NotificationsPage extends StatefulWidget {
 }
 
 class _NotificationsPageState extends State<NotificationsPage> {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
   List<Map<String, dynamic>> notifications = [];
   bool _isLoading = true;
 
@@ -24,26 +23,16 @@ class _NotificationsPageState extends State<NotificationsPage> {
   }
 
   Future<void> _fetchNotifications() async {
-    final user = _auth.currentUser;
-    if (user == null) {
-      setState(() {
-        _isLoading = false;
-      });
-      return;
-    }
-    final ref = FirebaseDatabase.instance.ref('notifications/${user.uid}');
-    final snapshot = await ref.get();
+    // استبدل userId بمعرف المستخدم الحقيقي إذا توفر
+    const userId = 'dummyUserId';
+    final url = Uri.parse('http://localhost:3000/notifications/$userId');
+    final response = await http.get(url);
     final List<Map<String, dynamic>> notifs = [];
-    if (snapshot.exists) {
-      final data = snapshot.value as Map<dynamic, dynamic>;
-      data.forEach((key, value) {
-        if (value is Map<dynamic, dynamic>) {
-          notifs.add({
-            'id': key,
-            ...Map<String, dynamic>.from(value),
-          });
-        }
-      });
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as List;
+      for (final notif in data) {
+        notifs.add(Map<String, dynamic>.from(notif));
+      }
       notifs.sort((a, b) => (b['timestamp'] ?? 0).compareTo(a['timestamp'] ?? 0));
     }
     setState(() {
@@ -83,15 +72,13 @@ class _NotificationsPageState extends State<NotificationsPage> {
                                 padding: const EdgeInsets.only(left: 8.0),
                                 child: GestureDetector(
                                   onTap: () async {
-                                    final user = _auth.currentUser;
-                                    if (user != null) {
-                                      final ref = FirebaseDatabase.instance.ref('notifications/${user.uid}/${notif['id']}');
-                                      await ref.update({'read': true});
-                                    }
+                                    // استبدل userId بمعرف المستخدم الحقيقي إذا توفر
+                                    const userId = 'dummyUserId';
+                                    final url = Uri.parse('http://localhost:3000/notifications/$userId/${notif['id']}');
+                                    await http.patch(url, body: json.encode({'read': true}), headers: {'Content-Type': 'application/json'});
                                     setState(() {
                                       notifications[index]['read'] = true;
                                     });
-
                                     Navigator.pop(context, {'showBanner': true, 'bannerMessage': 'تمت قراءة الإشعار بنجاح'});
                                   },
                                   child: Container(
@@ -114,18 +101,14 @@ class _NotificationsPageState extends State<NotificationsPage> {
                         onTap: () async {
 
                           if (notif['type'] == 'pending_account' && notif['userId'] != null) {
-
                             if (notif['read'] == false) {
-                              final user = _auth.currentUser;
-                              if (user != null) {
-                                final ref = FirebaseDatabase.instance.ref('notifications/${user.uid}/${notif['id']}');
-                                await ref.update({'read': true});
-                              }
+                              const userId = 'dummyUserId';
+                              final url = Uri.parse('http://localhost:3000/notifications/$userId/${notif['id']}');
+                              await http.patch(url, body: json.encode({'read': true}), headers: {'Content-Type': 'application/json'});
                               setState(() {
                                 notifications[index]['read'] = true;
                               });
                             }
-
                             Navigator.push(
                               context,
                               MaterialPageRoute(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_database/firebase_database.dart';
+
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../loginpage.dart';
 
 class RoleGuard extends StatefulWidget {
@@ -23,19 +24,15 @@ class _RoleGuardState extends State<RoleGuard> {
   }
 
   Future<void> _checkRole() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
+			final prefs = await SharedPreferences.getInstance();
+			final userDataJson = prefs.getString('userData');
+			if (userDataJson == null) {
       _redirect();
       return;
     }
-    final dbRef = FirebaseDatabase.instance.ref();
-    final snapshot = await dbRef.child('users').orderByChild('email').equalTo(user.email).once();
-    if (snapshot.snapshot.value == null) {
-      _redirect();
-      return;
-    }
-    final data = (snapshot.snapshot.value as Map).values.first;
-    final role = data['role']?.toString().toLowerCase();
+			final userData = json.decode(userDataJson);
+			// استخدم ROLE بحروف كبيرة كما في الرد من السيرفر
+			final role = (userData['ROLE'] ?? userData['role'])?.toString().toLowerCase();
     setState(() {
       _allowed = role == widget.allowedRole.name;
       _checking = false;

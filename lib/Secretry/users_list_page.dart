@@ -1,7 +1,8 @@
 // ignore_for_file: library_private_types_in_public_api, use_build_context_synchronously
 
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'package:provider/provider.dart';
 import '../../providers/language_provider.dart';
 import '../../providers/secretary_provider.dart';
@@ -15,11 +16,10 @@ class UsersListPage extends StatefulWidget {
 }
 
 class _UsersListPageState extends State<UsersListPage> {
-  final DatabaseReference _usersRef = FirebaseDatabase.instance.ref('users');
   List<Map<String, dynamic>> _users = [];
   bool _isLoading = true;
   bool _hasError = false;
-  String? _currentUserRole; 
+  String? _currentUserRole;
 
   final Map<String, Map<String, String>> _translations = {
     'users_list': {'ar': 'قائمة المستخدمين', 'en': 'Users List'},
@@ -53,30 +53,23 @@ class _UsersListPageState extends State<UsersListPage> {
   }
 
   Future<void> _loadSecretaryDataToProvider() async {
-    FirebaseDatabase.instance.ref('users');
     Provider.of<SecretaryProvider>(context, listen: false);
-   
   }
 
   Future<void> _loadUsers() async {
     try {
-      final snapshot = await _usersRef.get();
-      if (snapshot.exists) {
-        final data = snapshot.value as Map<dynamic, dynamic>;
+      final response = await http.get(Uri.parse('http://localhost:3000/users'));
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
         final List<Map<String, dynamic>> users = [];
-
-        data.forEach((key, value) {
-          if (value is Map<dynamic, dynamic>) {
-            final userMap = Map<String, dynamic>.from(value);
-            final realId = userMap['id']?.toString() ?? key.toString();
+        for (final user in data) {
+          if (user is Map<String, dynamic>) {
             users.add({
-              'uid': key.toString(),
-              'id': realId, 
-              ...userMap,
+              'uid': user['id']?.toString() ?? '',
+              ...user,
             });
           }
-        });
-
+        }
         setState(() {
           _users = users;
           _isLoading = false;
@@ -86,7 +79,7 @@ class _UsersListPageState extends State<UsersListPage> {
         setState(() {
           _users = [];
           _isLoading = false;
-          _hasError = false;
+          _hasError = true;
         });
       }
     } catch (e) {
@@ -202,7 +195,7 @@ class _UsersListPageState extends State<UsersListPage> {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: DropdownButtonFormField<String>(
-        value: currentValue,
+        initialValue: currentValue,
         items: [
           DropdownMenuItem(
             value: 'male',
@@ -227,21 +220,21 @@ class _UsersListPageState extends State<UsersListPage> {
   }
 
   Future<void> _updateUser(
-      String uid,
-      String firstName,
-      String fatherName,
-      String grandfatherName,
-      String familyName,
-      String birthDate,
-      String phoneNumber,
-      String idNumber,
-      String gender,
-      String email,
-      String username,
-      String address,
-      ) async {
+    String uid,
+    String firstName,
+    String fatherName,
+    String grandfatherName,
+    String familyName,
+    String birthDate,
+    String phoneNumber,
+    String idNumber,
+    String gender,
+    String email,
+    String username,
+    String address,
+  ) async {
     try {
-      await _usersRef.child(uid).update({
+      final updateData = {
         'firstName': firstName,
         'fatherName': fatherName,
         'grandfatherName': grandfatherName,
@@ -253,29 +246,27 @@ class _UsersListPageState extends State<UsersListPage> {
         'email': email,
         'username': username,
         'address': address,
-
-      });
-
-      final index = _users.indexWhere((user) => user['uid'] == uid);
-      if (index != -1) {
-        setState(() {
-          _users[index] = {
-            'uid': uid,
-            'firstName': firstName,
-            'fatherName': fatherName,
-            'grandfatherName': grandfatherName,
-            'familyName': familyName,
-            'birthDate': birthDate,
-            'phoneNumber': phoneNumber,
-            'idNumber': idNumber,
-            'gender': gender,
-            'email': email,
-            'username': username,
-            'address': address,
-
-            'password': _users[index]['password'] ?? '',
-          };
-        });
+      };
+      final response = await http.put(
+        Uri.parse('http://localhost:3000/users/$uid'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(updateData),
+      );
+      if (response.statusCode == 200) {
+        final index = _users.indexWhere((user) => user['uid'] == uid);
+        if (index != -1) {
+          setState(() {
+            _users[index] = {
+              'uid': uid,
+              ...updateData,
+              'password': _users[index]['password'] ?? '',
+            };
+          });
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error updating user: ${response.body}')),
+        );
       }
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(

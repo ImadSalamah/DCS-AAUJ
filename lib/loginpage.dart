@@ -1,20 +1,19 @@
-// ignore_for_file: use_build_context_synchronously
+// ignore_for_file: use_build_context_synchronously, library_private_types_in_public_api
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:provider/provider.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'signup_page.dart';
+import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
+import 'dart:convert';
+
 import '../providers/language_provider.dart';
 import 'main.dart';
-import 'PendingPatientPage.dart';
 
 // ignore: constant_identifier_names
-enum UserRole { patient, dental_student, doctor, secretary, admin, security, radiology }
+enum UserRole { patient, dental_student, doctor, secretary, nurse, admin, security, radiology }
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -27,32 +26,27 @@ class _LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
   final _usernameController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _emailController = TextEditingController();
   bool _rememberMe = false;
   bool _obscurePassword = true;
-  bool _isPatient = true;
   bool _isLoading = false;
 
   final Color primaryColor = const Color(0xFF2A7A94);
   final Color accentColor = const Color(0xFF4AB8D8);
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  late final DatabaseReference _dbRef;
+  
+  // قاعدة البيانات الجديدة - Oracle API
+  final String _apiBaseUrl = 'http://localhost:3000'; // تغيير هذا إلى عنوان الخادم الخاص بك
 
   final Map<String, Map<String, String>> _translations = {
     'login': {'ar': 'دخول', 'en': 'Login'},
     'username': {'ar': 'إسم المستخدم', 'en': 'Username'},
     'password': {'ar': 'كلمة المرور', 'en': 'Password'},
-    'email': {'ar': 'البريد الإلكتروني', 'en': 'Email'},
     'remember_me': {'ar': 'تذكرني', 'en': 'Remember Me'},
     'forgot_password': {'ar': 'نسيت كلمة المرور؟', 'en': 'Forgot Password?'},
     'login_button': {'ar': 'تسجيل الدخول', 'en': 'Sign In'},
-    'create_account': {'ar': 'إنشاء حساب جديد', 'en': 'Create New Account'},
     'app_name': {
       'ar': 'عيادات أسنان الجامعة العربية الأمريكية',
       'en': 'Arab American University Dental Clinics'
     },
-    'patient': {'ar': 'مريض', 'en': 'Patient'},
-    'staff': {'ar': 'موظف/طبيب', 'en': 'Staff/Doctor'},
     'login_error': {
       'ar': 'بيانات الدخول غير صحيحة',
       'en': 'Invalid login credentials'
@@ -66,21 +60,9 @@ class _LoginPageState extends State<LoginPage> {
       'en': 'Username Recovery'
     },
     'ok': {'ar': 'موافق', 'en': 'OK'},
-    'no_patient_account': {
-      'ar': 'لا يوجد حساب مريض بهذا البريد الإلكتروني',
-      'en': 'No patient account found with this email'
-    },
     'no_student_account': {
       'ar': 'لا يوجد حساب طالب بهذا الاسم',
       'en': 'No student account found with this username'
-    },
-    'Please enter email': {
-      'ar': 'الرجاء إدخال البريد الإلكتروني',
-      'en': 'Please enter email'
-    },
-    'Please enter a valid email': {
-      'ar': 'الرجاء إدخال بريد إلكتروني صحيح',
-      'en': 'Please enter a valid email'
     },
     'Please enter username': {
       'ar': 'الرجاء إدخال اسم المستخدم',
@@ -98,10 +80,6 @@ class _LoginPageState extends State<LoginPage> {
       'ar': 'كلمة المرور يجب أن تكون 6 أحرف على الأقل',
       'en': 'Password must be at least 6 characters'
     },
-    'This account is not registered as a patient': {
-      'ar': 'هذا الحساب غير مسجل كمريض',
-      'en': 'This account is not registered as a patient'
-    },
     'Account data inconsistency detected': {
       'ar': 'عدم تطابق في بيانات الحساب',
       'en': 'Account data inconsistency detected'
@@ -118,12 +96,15 @@ class _LoginPageState extends State<LoginPage> {
       'ar': 'هناك مشكلة في بيانات الحساب',
       'en': 'Account data problem detected'
     },
+    'connection_error': {
+      'ar': 'خطأ في الاتصال بالخادم',
+      'en': 'Server connection error'
+    },
   };
 
   @override
   void initState() {
     super.initState();
-    _dbRef = FirebaseDatabase.instance.ref();
     _loadRememberMe();
   }
 
@@ -132,12 +113,7 @@ class _LoginPageState extends State<LoginPage> {
     setState(() {
       _rememberMe = prefs.getBool('remember_me') ?? false;
       if (_rememberMe) {
-        if (_isPatient) {
-          _emailController.text = prefs.getString('remembered_email') ?? '';
-        } else {
-          _usernameController.text =
-              prefs.getString('remembered_username') ?? '';
-        }
+        _usernameController.text = prefs.getString('remembered_username') ?? '';
       }
     });
   }
@@ -146,131 +122,33 @@ class _LoginPageState extends State<LoginPage> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('remember_me', _rememberMe);
     if (_rememberMe) {
-      await prefs.setString('remembered_email', _emailController.text);
       await prefs.setString('remembered_username', _usernameController.text);
-      await prefs.setBool('remembered_is_patient', _isPatient);
     } else {
-      await prefs.remove('remembered_email');
       await prefs.remove('remembered_username');
-      await prefs.remove('remembered_is_patient');
     }
   }
 
-
   String _translate(BuildContext context, String key) {
-    final languageProvider =
-        Provider.of<LanguageProvider>(context, listen: false);
-    return _translations[key]![languageProvider.isEnglish ? 'en' : 'ar'] ?? '';
+    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
+    return _translations[key]?[languageProvider.isEnglish ? 'en' : 'ar'] ?? key;
   }
 
   Future<void> _handleLogin(BuildContext context) async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
-    final languageProvider =
-        Provider.of<LanguageProvider>(context, listen: false);
+    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
 
     try {
       await _saveRememberMe();
-      if (_isPatient) {
-        await _handlePatientLogin(languageProvider);
-      } else {
-        await _handleStaffLogin(languageProvider);
-      }
-    } on FirebaseAuthException catch (e) {
-      _handleFirebaseError(context, e, languageProvider);
-    } catch (e, stackTrace) {
-      debugPrint('General Error: $e\n$stackTrace');
-      _showErrorSnackbar(context, _translate(context, 'login_error'));
+      await _handleStaffLogin(languageProvider);
+    } catch (e) {
+      _handleLoginError(context, e, languageProvider);
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
       }
     }
-  }
-
-  Future<void> _handlePatientLogin(LanguageProvider languageProvider) async {
-    final email = _emailController.text.trim().toLowerCase();
-    final password = _passwordController.text.trim();
-
-    final pendingSnapshot = await _dbRef
-        .child('pendingUsers')
-        .orderByChild('email')
-        .equalTo(email)
-        .once();
-
-    if (pendingSnapshot.snapshot.value != null) {
-      await _auth.signInWithEmailAndPassword(email: email, password: password);
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => const PendingPatientPage(),
-          settings: RouteSettings(arguments: email),
-        ),
-      );
-      return;
-    }
-
-    Map<dynamic, dynamic>? patientData = await _checkUserExists(email);
-    bool isRejected = false;
-    bool foundInRejected = false;
-
-    if (patientData == null) {
-      final rejectedSnapshot = await _dbRef
-          .child('rejectedUsers')
-          .orderByChild('email')
-          .equalTo(email)
-          .once();
-      if (rejectedSnapshot.snapshot.value != null) {
-        patientData = (rejectedSnapshot.snapshot.value as Map<dynamic, dynamic>).values.first;
-        isRejected = true;
-        foundInRejected = true;
-      } else {
-        throw FirebaseAuthException(
-          code: 'user-not-found',
-          message: _translate(navigatorKey.currentContext!, 'no_patient_account'),
-        );
-      }
-    } else {
-      isRejected = (patientData['status']?.toString() == 'rejected' || patientData['isActive'] == false);
-    }
-
-    if (patientData == null || patientData['role']?.toString().toLowerCase() != 'patient') {
-      throw FirebaseAuthException(
-        code: 'wrong-account-type',
-        message: languageProvider.isEnglish
-            ? 'This account is not registered as a patient'
-            : 'هذا الحساب غير مسجل كمريض',
-      );
-    }
-
-    await _auth.signInWithEmailAndPassword(email: email, password: password);
-
-    if (isRejected || foundInRejected) {
-      if (!mounted) return;
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (context) => const PendingPatientPage(),
-          settings: RouteSettings(arguments: email),
-        ),
-      );
-      return;
-    }
-
-    final recheckPatientData = await _checkUserExists(email);
-    if (recheckPatientData == null) {
-      await _auth.signOut();
-      throw FirebaseAuthException(
-        code: 'inconsistent-data',
-        message: languageProvider.isEnglish
-            ? 'Account data inconsistency detected'
-            : 'عدم تطابق في بيانات الحساب',
-      );
-    }
-
-    _navigateToDashboard(UserRole.patient);
   }
 
   Future<void> _navigateToDashboard(UserRole role) async {
@@ -290,6 +168,9 @@ class _LoginPageState extends State<LoginPage> {
       case UserRole.secretary:
         route = '/secretary-dashboard';
         break;
+      case UserRole.nurse:
+        route = '/nurse-dashboard';
+        break;
       case UserRole.admin:
         route = '/admin-dashboard';
         break;
@@ -300,144 +181,91 @@ class _LoginPageState extends State<LoginPage> {
         route = '/radiology-dashboard';
         break;
     }
-
     navigatorKey.currentState?.pushReplacementNamed(route);
   }
 
-  Future<Map<dynamic, dynamic>?> _checkUserExists(String email) async {
-    try {
-      final snapshot = await _dbRef
-          .child('users')
-          .orderByChild('email')
-          .equalTo(email.toLowerCase().trim())
-          .once();
-
-      if (snapshot.snapshot.value == null) return null;
-
-      final data = snapshot.snapshot.value as Map<dynamic, dynamic>;
-      return data.values.first;
-    } catch (e) {
-      debugPrint('Error checking user: $e');
-      return null;
-    }
-  }
-
-  UserRole _determineUserRole(Map<dynamic, dynamic> userData) {
-    final role = userData['role']?.toString().toLowerCase() ?? '';
-
-    switch (role) {
-      case 'patient':
-        return UserRole.patient;
-      case 'dental_student':
-        return UserRole.dental_student;
-      case 'doctor':
-        return UserRole.doctor;
-      case 'secretary':
-        return UserRole.secretary;
-      case 'admin':
-        return UserRole.admin;
-      case 'security':
-        return UserRole.security;
-      case 'radiology':
-        return UserRole.radiology;
-      default:
-        return UserRole.patient;
-    }
-  }
-
   Future<void> _handleStaffLogin(LanguageProvider languageProvider) async {
-    final username = _usernameController.text.trim();
+    final email = _usernameController.text.trim().toLowerCase();
     final password = _passwordController.text.trim();
 
-    final userRole = await _authenticateStaff(username, password);
-    _navigateToDashboard(userRole);
-  }
+    final response = await http.post(
+      Uri.parse('$_apiBaseUrl/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({
+        'email': email,
+        'password': password,
+      }),
+    );
 
-  Future<UserRole> _authenticateStaff(String username, String password) async {
-    final staffSnapshot = await _dbRef
-        .child('staff')
-        .orderByChild('username')
-        .equalTo(username)
-        .once();
+    if (response.statusCode == 200) {
+      final responseData = json.decode(response.body);
+      final userRole = responseData['user']['ROLE']?.toString().trim().toLowerCase();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('userData', json.encode(responseData['user']));
+      // حفظ USER_ID في SharedPreferences
+      if (responseData['user']['USER_ID'] != null) {
+        await prefs.setString('USER_ID', responseData['user']['USER_ID'].toString());
+      }
+      // Also set in LanguageProvider for runtime access
+      if (responseData['user']?['USER_ID'] != null) {
+        try {
+          languageProvider.setUserId(responseData['user']['USER_ID'].toString());
+        } catch (_) {}
+      }
 
-    final studentSnapshot = staffSnapshot.snapshot.value == null
-        ? await _dbRef
-            .child('students')
-            .orderByChild('username')
-            .equalTo(username)
-            .once()
-        : null;
+      UserRole? role;
+      switch (userRole) {
+        case 'dental_student':
+          role = UserRole.dental_student;
+          break;
+        case 'doctor':
+          role = UserRole.doctor;
+          break;
+        case 'secretary':
+          role = UserRole.secretary;
+          break;
+        case 'nurse':
+          role = UserRole.nurse;
+          break;
+        case 'admin':
+          role = UserRole.admin;
+          break;
+        case 'security':
+          role = UserRole.security;
+          break;
+        case 'radiology':
+          role = UserRole.radiology;
+          break;
+        default:
+          role = null;
+      }
 
-    if (staffSnapshot.snapshot.value == null &&
-        studentSnapshot?.snapshot.value == null) {
-      throw FirebaseAuthException(
-        code: 'user-not-found',
-        message: _translate(navigatorKey.currentContext!, 'no_student_account'),
-      );
-    }
-
-    Map<dynamic, dynamic> userData;
-    bool isStudent = false;
-
-    if (staffSnapshot.snapshot.value != null) {
-      userData =
-          (staffSnapshot.snapshot.value as Map<dynamic, dynamic>).values.first;
+      if (role == null) {
+        throw Exception(_translate(context, 'Account data inconsistency detected'));
+      }
+      await _navigateToDashboard(role);
+    } else if (response.statusCode == 401) {
+      throw Exception(_translate(context, 'no_student_account'));
+    } else if (response.statusCode == 500) {
+      throw Exception(_translate(context, 'login_error'));
     } else {
-      userData = (studentSnapshot!.snapshot.value as Map<dynamic, dynamic>)
-          .values
-          .first;
-      isStudent = true;
+      throw Exception('${_translate(context, 'login_error')} (${response.statusCode})');
     }
-
-    if (userData['email'] == null) {
-      throw FirebaseAuthException(
-        code: 'missing-email',
-        message: 'User record is missing email',
-      );
-    }
-
-    final email = userData['email'].toString();
-    await _auth.signInWithEmailAndPassword(email: email, password: password);
-
-    if (isStudent) {
-      return UserRole.dental_student;
-    }
-
-    return _determineUserRole(userData);
   }
 
-  void _handleFirebaseError(BuildContext context, FirebaseAuthException e,
-      LanguageProvider languageProvider) {
+  void _handleLoginError(BuildContext context, dynamic e, LanguageProvider languageProvider) {
     String errorMessage;
-    switch (e.code) {
-      case 'user-not-found':
-        errorMessage = e.message ?? _translate(context, 'login_error');
-        break;
-      case 'wrong-password':
-        errorMessage = _translate(context, 'login_error');
-        break;
-      case 'wrong-account-type':
-      case 'missing-email':
-        errorMessage = e.message ?? _translate(context, 'login_error');
-        break;
-      case 'user-disabled':
-        errorMessage = languageProvider.isEnglish
-            ? 'This account has been disabled'
-            : 'هذا الحساب معطل';
-        break;
-      case 'too-many-requests':
-        errorMessage = languageProvider.isEnglish
-            ? 'Too many attempts, try again later'
-            : 'محاولات كثيرة جداً، يرجى المحاولة لاحقاً';
-        break;
-      case 'inconsistent-data':
-        errorMessage = e.message ??
-            (languageProvider.isEnglish
-                ? 'Account data problem detected'
-                : 'هناك مشكلة في بيانات الحساب');
-        break;
-      default:
-        errorMessage = '${_translate(context, 'login_error')} (${e.code})';
+    
+    if (e is Exception) {
+      errorMessage = e.toString().replaceFirst('Exception: ', '');
+    } else {
+      errorMessage = _translate(context, 'login_error');
+    }
+    
+    // التحقق من أخطاء الاتصال
+    if (e.toString().contains('Connection refused') || 
+        e.toString().contains('Failed host lookup')) {
+      errorMessage = _translate(context, 'connection_error');
     }
 
     _showErrorSnackbar(context, errorMessage);
@@ -452,23 +280,6 @@ class _LoginPageState extends State<LoginPage> {
         duration: const Duration(seconds: 3),
       ),
     );
-  }
-
-  Future<void> _handleForgotPassword() async {
-    if (_emailController.text.isEmpty) {
-      _showErrorSnackbar(navigatorKey.currentContext!,
-          _translate(navigatorKey.currentContext!, 'email'));
-      return;
-    }
-
-    try {
-      await _auth.sendPasswordResetEmail(email: _emailController.text.trim());
-      _showErrorSnackbar(navigatorKey.currentContext!,
-          _translate(navigatorKey.currentContext!, 'reset_password_sent'));
-    } catch (e) {
-      _showErrorSnackbar(navigatorKey.currentContext!,
-          _translate(navigatorKey.currentContext!, 'login_error'));
-    }
   }
 
   @override
@@ -486,9 +297,7 @@ class _LoginPageState extends State<LoginPage> {
       builder: (context, constraints) {
         final isWeb = constraints.maxWidth > 700;
         return Directionality(
-          textDirection: languageProvider.isEnglish
-              ? TextDirection.ltr
-              : TextDirection.rtl,
+          textDirection: languageProvider.isEnglish ? TextDirection.ltr : TextDirection.rtl,
           child: isWeb
               ? Stack(
                   children: [
@@ -502,14 +311,13 @@ class _LoginPageState extends State<LoginPage> {
                           colors: [
                             primaryColor,
                             accentColor.withAlpha(179),
-Colors.white.withAlpha(179),
-
+                            Colors.white.withAlpha(179),
                           ],
                         ),
                       ),
                     ),
                     Scaffold(
-                      backgroundColor: Colors.transparent, 
+                      backgroundColor: Colors.transparent,
                       appBar: AppBar(
                         backgroundColor: primaryColor,
                         elevation: 0,
@@ -550,26 +358,26 @@ Colors.white.withAlpha(179),
               : Scaffold(
                   backgroundColor: Colors.white,
                   appBar: AppBar(
-                      backgroundColor: primaryColor,
-                      elevation: 0,
-                      automaticallyImplyLeading: false,
-                      title: Text(
-                        _translate(context, 'app_name'),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                    backgroundColor: primaryColor,
+                    elevation: 0,
+                    automaticallyImplyLeading: false,
+                    title: Text(
+                      _translate(context, 'app_name'),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
                       ),
-                      actions: [
-                        IconButton(
-                          icon: const Icon(Icons.language, color: Colors.white),
-                          onPressed: () => languageProvider.toggleLanguage(),
-                        ),
-                      ],
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
+                    actions: [
+                      IconButton(
+                        icon: const Icon(Icons.language, color: Colors.white),
+                        onPressed: () => languageProvider.toggleLanguage(),
+                      ),
+                    ],
+                  ),
                   body: _buildLoginBody(context, constraints, isWeb, languageProvider),
                 ),
         );
@@ -589,7 +397,7 @@ Colors.white.withAlpha(179),
                 minHeight: constraints.maxHeight,
               ),
               width: double.infinity,
-              decoration: isWeb ? null : null, 
+              decoration: isWeb ? null : null,
               child: Column(
                 children: [
                   Padding(
@@ -606,16 +414,13 @@ Colors.white.withAlpha(179),
                               const SizedBox(height: 20),
                               Image.asset(
                                 "lib/assets/aauplogo.png",
-                                width: isWeb
-                                    ? 450
-                                    : 200, 
+                                width: isWeb ? 450 : 200,
                               ),
                               const SizedBox(height: 30),
                               Container(
                                 padding: const EdgeInsets.all(20),
                                 decoration: BoxDecoration(
-                                  border: Border.all(
-                                      color: Colors.grey.shade300),
+                                  border: Border.all(color: Colors.grey.shade300),
                                   borderRadius: BorderRadius.circular(10),
                                   color: isWeb ? Colors.white : null,
                                   boxShadow: isWeb
@@ -630,48 +435,6 @@ Colors.white.withAlpha(179),
                                 ),
                                 child: Column(
                                   children: [
-                                    Row(
-                                      children: [
-                                        Expanded(
-                                          child: ChoiceChip(
-                                            label: Text(_translate(
-                                                context, 'patient')),
-                                            selected: _isPatient,
-                                            selectedColor: primaryColor,
-                                            labelStyle: TextStyle(
-                                              color: _isPatient
-                                                  ? Colors.white
-                                                  : Colors.black,
-                                            ),
-                                            onSelected: (_) => setState(() {
-                                              _isPatient = true;
-                                              _usernameController
-                                                  .clear(); 
-                                            }),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 10),
-                                        Expanded(
-                                          child: ChoiceChip(
-                                            label: Text(_translate(
-                                                context, 'staff')),
-                                            selected: !_isPatient,
-                                            selectedColor: primaryColor,
-                                            labelStyle: TextStyle(
-                                              color: !_isPatient
-                                                  ? Colors.white
-                                                  : Colors.black,
-                                            ),
-                                            onSelected: (_) => setState(() {
-                                              _isPatient = false;
-                                              _emailController
-                                                  .clear();
-                                            }),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 30),
                                     Text(
                                       _translate(context, 'login'),
                                       style: TextStyle(
@@ -683,201 +446,82 @@ Colors.white.withAlpha(179),
                                       overflow: TextOverflow.ellipsis,
                                     ),
                                     const SizedBox(height: 20),
-                                    if (_isPatient) ...[
-                                      TextFormField(
-                                        controller: _emailController,
-                                        keyboardType:
-                                            TextInputType.emailAddress,
-                                        decoration: InputDecoration(
-                                          labelText:
-                                              _translate(context, 'email'),
-                                          prefixIcon: Icon(
-                                              Icons.email_outlined,
-                                              color: accentColor),
-                                          border: OutlineInputBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(8),
-                                            borderSide: BorderSide(
-                                                color:
-                                                    Colors.grey.shade400),
-                                          ),
-                                          focusedBorder: OutlineInputBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(8),
-                                            borderSide: BorderSide(
-                                                color: primaryColor,
-                                                width: 2),
-                                          ),
+                                    TextFormField(
+                                      controller: _usernameController,
+                                      decoration: InputDecoration(
+                                        labelText: _translate(context, 'username'),
+                                        prefixIcon: Icon(Icons.person_outline, color: accentColor),
+                                        border: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(8),
+                                          borderSide: BorderSide(color: Colors.grey.shade400),
                                         ),
-                                        validator: (value) {
-                                          if (value == null ||
-                                              value.isEmpty) {
-                                            return languageProvider
-                                                    .isEnglish
-                                                ? 'Please enter email'
-                                                : 'الرجاء إدخال البريد الإلكتروني';
-                                          }
-                                          if (!value.contains('@')) {
-                                            return languageProvider
-                                                    .isEnglish
-                                                ? 'Please enter a valid email'
-                                                : 'الرجاء إدخال بريد إلكتروني صحيح';
-                                          }
-                                          return null;
-                                        },
+                                        focusedBorder: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(8),
+                                          borderSide: BorderSide(color: primaryColor, width: 2),
+                                        ),
                                       ),
-                                      const SizedBox(height: 20),
-                                    ],
-                                    if (!_isPatient)
-                                      Column(
-                                        children: [
-                                          TextFormField(
-                                            controller: _usernameController,
-                                            decoration: InputDecoration(
-                                              labelText: _translate(
-                                                  context, 'username'),
-                                              prefixIcon: Icon(
-                                                  Icons.person_outline,
-                                                  color: accentColor),
-                                              border: OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(
-                                                        8),
-                                                borderSide: BorderSide(
-                                                    color: Colors
-                                                        .grey.shade400),
-                                              ),
-                                              focusedBorder:
-                                                  OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(
-                                                        8),
-                                                borderSide: BorderSide(
-                                                    color: primaryColor,
-                                                    width: 2),
-                                              ),
-                                            ),
-                                            validator: (value) {
-                                              if (value == null ||
-                                                  value.isEmpty) {
-                                                return languageProvider
-                                                        .isEnglish
-                                                    ? 'Please enter username'
-                                                    : 'الرجاء إدخال اسم المستخدم';
-                                              }
-                                              if (value.contains(' ')) {
-                                                return languageProvider
-                                                        .isEnglish
-                                                    ? 'Username cannot contain spaces'
-                                                    : 'اسم المستخدم لا يمكن أن يحتوي على مسافات';
-                                              }
-                                              return null;
-                                            },
-                                          ),
-                                          const SizedBox(height: 5),
-                                       
-                                        ],
-                                      ),
+                                      validator: (value) {
+                                        if (value == null || value.isEmpty) {
+                                          return _translate(context, 'Please enter username');
+                                        }
+                                        if (value.contains(' ')) {
+                                          return _translate(context, 'Username cannot contain spaces');
+                                        }
+                                        return null;
+                                      },
+                                    ),
                                     const SizedBox(height: 20),
                                     TextFormField(
                                       key: const Key('password_field'),
                                       controller: _passwordController,
                                       obscureText: _obscurePassword,
                                       decoration: InputDecoration(
-                                        labelText:
-                                            _translate(context, 'password'),
-                                        prefixIcon: Icon(Icons.lock_outline,
-                                            color: accentColor),
+                                        labelText: _translate(context, 'password'),
+                                        prefixIcon: Icon(Icons.lock_outline, color: accentColor),
                                         suffixIcon: IconButton(
                                           icon: Icon(
-                                            _obscurePassword
-                                                ? Icons.visibility_off
-                                                : Icons.visibility,
+                                            _obscurePassword ? Icons.visibility_off : Icons.visibility,
                                             color: accentColor,
                                           ),
-                                          onPressed: () => setState(() =>
-                                              _obscurePassword =
-                                                  !_obscurePassword),
+                                          onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
                                         ),
                                         border: OutlineInputBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(8),
-                                          borderSide: BorderSide(
-                                              color: Colors.grey.shade400),
+                                          borderRadius: BorderRadius.circular(8),
+                                          borderSide: BorderSide(color: Colors.grey.shade400),
                                         ),
                                         focusedBorder: OutlineInputBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(8),
-                                          borderSide: BorderSide(
-                                              color: primaryColor,
-                                              width: 2),
+                                          borderRadius: BorderRadius.circular(8),
+                                          borderSide: BorderSide(color: primaryColor, width: 2),
                                         ),
                                       ),
                                       validator: (value) {
-                                        if (value == null ||
-                                            value.isEmpty) {
-                                          return languageProvider.isEnglish
-                                              ? 'Please enter password'
-                                              : 'الرجاء إدخال كلمة المرور';
+                                        if (value == null || value.isEmpty) {
+                                          return _translate(context, 'Please enter password');
                                         }
                                         if (value.length < 6) {
-                                          return languageProvider.isEnglish
-                                              ? 'Password must be at least 6 characters'
-                                              : 'كلمة المرور يجب أن تكون 6 أحرف على الأقل';
+                                          return _translate(context, 'Password must be at least 6 characters');
                                         }
                                         return null;
                                       },
+                                      onFieldSubmitted: (_) => _handleLogin(context),
                                     ),
                                     const SizedBox(height: 20),
                                     Row(
                                       children: [
                                         Checkbox(
                                           value: _rememberMe,
-                                          onChanged: (value) => setState(
-                                              () => _rememberMe = value!),
+                                          onChanged: (value) => setState(() => _rememberMe = value!),
                                           activeColor: primaryColor,
                                         ),
                                         Flexible(
                                           flex: 2,
                                           child: Text(
-                                            _translate(
-                                                context, 'remember_me'),
-                                            style: TextStyle(
-                                                color: primaryColor,
-                                                fontSize: 14),
+                                            _translate(context, 'remember_me'),
+                                            style: TextStyle(color: primaryColor, fontSize: 14),
                                             maxLines: 1,
                                             overflow: TextOverflow.ellipsis,
                                           ),
                                         ),
-                                        if (_isPatient) ...[
-                                          const SizedBox(
-                                              width:
-                                                  16),
-                                          Flexible(
-                                            flex: 3,
-                                            child: Align(
-                                              alignment:
-                                                  Alignment.centerLeft,
-                                              child: TextButton(
-                                                onPressed:
-                                                    _handleForgotPassword,
-                                                style: TextButton.styleFrom(
-                                                    padding:
-                                                        EdgeInsets.zero),
-                                                child: Text(
-                                                  _translate(context,
-                                                      'forgot_password'),
-                                                  style: TextStyle(
-                                                      color: accentColor,
-                                                      fontSize: 14),
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ],
                                       ],
                                     ),
                                     const SizedBox(height: 20),
@@ -885,56 +529,26 @@ Colors.white.withAlpha(179),
                                       width: double.infinity,
                                       child: ElevatedButton(
                                         key: const Key('login_button'),
-                                        onPressed: _isLoading
-                                            ? null
-                                            : () => _handleLogin(context),
+                                        onPressed: _isLoading ? null : () => _handleLogin(context),
                                         style: ElevatedButton.styleFrom(
                                           backgroundColor: primaryColor,
-                                          padding:
-                                              const EdgeInsets.symmetric(
-                                                  vertical: 16),
+                                          padding: const EdgeInsets.symmetric(vertical: 16),
                                           shape: RoundedRectangleBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(8),
+                                            borderRadius: BorderRadius.circular(8),
                                           ),
                                         ),
                                         child: _isLoading
-                                            ? const CircularProgressIndicator(
-                                                color: Colors.white)
+                                            ? const CircularProgressIndicator(color: Colors.white)
                                             : Text(
-                                                _translate(context,
-                                                    'login_button'),
+                                                _translate(context, 'login_button'),
                                                 style: const TextStyle(
                                                   fontSize: 18,
                                                   color: Colors.white,
-                                                  fontWeight:
-                                                      FontWeight.bold,
+                                                  fontWeight: FontWeight.bold,
                                                 ),
                                               ),
                                       ),
                                     ),
-                                    if (_isPatient) ...[
-                                      const SizedBox(height: 15),
-                                      TextButton(
-                                        onPressed: () {
-                                          Navigator.push(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder: (context) =>
-                                                  const SignUpPage()),
-                                          );
-                                        },
-                                        child: Text(
-                                          _translate(
-                                              context, 'create_account'),
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            color: primaryColor,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
                                   ],
                                 ),
                               ),
@@ -943,26 +557,20 @@ Colors.white.withAlpha(179),
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   IconButton(
-                                    icon: const FaIcon(
-                                        FontAwesomeIcons.facebook),
-                                    onPressed: () => launchUrl(Uri.parse(
-                                        "https://www.facebook.com/aaup.edu")),
+                                    icon: const FaIcon(FontAwesomeIcons.facebook),
+                                    onPressed: () => launchUrl(Uri.parse("https://www.facebook.com/aaup.edu")),
                                     color: Colors.blue[800],
                                   ),
                                   const SizedBox(width: 10),
                                   IconButton(
-                                    icon: const FaIcon(
-                                        FontAwesomeIcons.linkedin),
-                                    onPressed: () => launchUrl(Uri.parse(
-                                        "https://www.linkedin.com/school/arabamericanuniversity")),
+                                    icon: const FaIcon(FontAwesomeIcons.linkedin),
+                                    onPressed: () => launchUrl(Uri.parse("https://www.linkedin.com/school/arabamericanuniversity")),
                                     color: Colors.blue[700],
                                   ),
                                   const SizedBox(width: 10),
                                   IconButton(
-                                    icon: const FaIcon(
-                                        FontAwesomeIcons.instagram),
-                                    onPressed: () => launchUrl(Uri.parse(
-                                        "https://www.instagram.com/Aaup_edu")),
+                                    icon: const FaIcon(FontAwesomeIcons.instagram),
+                                    onPressed: () => launchUrl(Uri.parse("https://www.instagram.com/Aaup_edu")),
                                     color: Colors.pinkAccent,
                                   ),
                                 ],
@@ -986,7 +594,6 @@ Colors.white.withAlpha(179),
   void dispose() {
     _usernameController.dispose();
     _passwordController.dispose();
-    _emailController.dispose();
     super.dispose();
   }
 }

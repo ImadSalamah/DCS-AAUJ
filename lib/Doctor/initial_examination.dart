@@ -1,27 +1,30 @@
-// ignore_for_file: use_build_context_synchronously
+// ignore_for_file: deprecated_member_use, empty_catches, use_build_context_synchronously
 
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'package:path_drawing/path_drawing.dart';
 import 'package:xml/xml.dart';
 import 'svg.dart';
-import 'ScreeningForm.dart';
+import 'assign_patients_to_student_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:convert';
-import 'active_case_counter.dart';
+import 'dental_form_table.dart';
+import 'ScreeningForm.dart';
 
 class InitialExamination extends StatefulWidget {
   final Map<String, dynamic>? patientData;
   final int? age;
   final String doctorId;
-  final String patientId; // أضف هذا المتغير
+  final String patientId;
+  final Map<String, dynamic>? examinationData;
 
   const InitialExamination({
     super.key,
     this.patientData,
     this.age,
     required this.doctorId,
-    required this.patientId, // أضف هنا أيضاً
+    required this.patientId,
+    this.examinationData, required bool isEditMode, String? existingExamId,
   });
 
   @override
@@ -29,16 +32,249 @@ class InitialExamination extends StatefulWidget {
 }
 
 class _InitialExaminationState extends State<InitialExamination> with SingleTickerProviderStateMixin {
-  double getResponsiveFontSize(BuildContext context, {double base = 18, double min = 12}) {
-    final width = MediaQuery.of(context).size.width;
-    if (width < 400) {
-      return min;
-    } else if (width < 600) {
-      return (base + min) / 2;
-    } else {
-      return base;
+  Map<String, bool> _dentalFormTableData = {};
+  String _dentalChartNotes = '';
+  final Map<String, String> _teethConditionNames = {};
+  late TabController _tabController;
+  final Map<String, dynamic> _examData = {
+    'tmj': 'Normal',
+    'lymphNode': 'Normal',
+    'patientProfile': 'Straight',
+    'lipCompetency': 'Competent',
+    'incisalClassification': 'Class I',
+    'overjet': 'Normal',
+    'overbite': 'Normal',
+    'hardPalate': 'Normal',
+    'buccalMucosa': 'Normal',
+    'floorOfMouth': 'Normal',
+    'edentulousRidge': 'Well-developed ridge',
+    'periodontalRisk': 'Low',
+    'periodontalChart': {
+      'Upper right posterior': 0,
+      'Upper anterior': 0,
+      'Upper left posterior': 0,
+      'Lower right posterior': 0,
+      'Lower anterior': 0,
+      'Lower left posterior': 0,
+    },
+    'dentalChart': {
+      'selectedTeeth': <String>[],
+      'teethConditions': <String, String>{},
+    }
+  };
+
+  Map<String, Color> _teethColors = {};
+  Map<String, dynamic>? _screeningData;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _loadTabIndex();
+    _tabController.addListener(() {
+      if (_tabController.indexIsChanging) {
+        _saveTabIndex(_tabController.index);
+      }
+    });
+    _loadLocalExamData();
+    _loadPreviousExaminationIfExists();
+
+    if (_dentalFormTableData.isEmpty && widget.examinationData != null && widget.examinationData!['examData'] != null && widget.examinationData!['examData']['dentalFormTable'] is Map) {
+      _dentalFormTableData = Map<String, bool>.from(widget.examinationData!['examData']['dentalFormTable'] as Map);
+    }
+
+    if (widget.examinationData != null) {
+      final Map<String, dynamic> oldExam = widget.examinationData!;
+      if (oldExam.isNotEmpty) {
+        oldExam.forEach((key, value) {
+          if (_examData.containsKey(key)) {
+            _examData[key] = value;
+          }
+        });
+        if (oldExam['dentalChart'] != null && oldExam['dentalChart'] is Map) {
+          final Map<String, dynamic> chart = Map<String, dynamic>.from(oldExam['dentalChart']);
+          List<String> selectedTeeth = [];
+          if (chart['selectedTeeth'] != null && chart['selectedTeeth'] is List) {
+            selectedTeeth = List<String>.from(chart['selectedTeeth'].map((e) => e.toString()));
+          }
+          Map<String, String> teethConditions = {};
+          if (chart['teethConditions'] != null && chart['teethConditions'] is Map) {
+            teethConditions = Map<String, String>.from(chart['teethConditions']);
+          }
+          final diseaseColorMap = {
+            'Mobile Tooth': 0xFF1976D2,
+            'Unrestorable Tooth': 0xFFD32F2F,
+            'Supernumerary': 0xFF7B1FA2,
+            'Tender to Percussion': 0xFFFFA000,
+            'Root Canal Therapy': 0xFF388E3C,
+            'Over Retained': 0xFF0097A7,
+            'Caries': 0xFF795548,
+            'Missing Tooth': 0xFF616161,
+            'Filling': 0xFFFFD600,
+            'Crown': 0xFFFF7043,
+            'Implant': 0xFF43A047,
+          };
+          _teethColors = {};
+          teethConditions.forEach((tooth, disease) {
+            if (diseaseColorMap.containsKey(disease)) {
+              _teethColors[tooth] = Color(diseaseColorMap[disease]!);
+            } else if (disease.length == 6 && int.tryParse(disease, radix: 16) != null) {
+              _teethColors[tooth] = Color(int.parse(disease, radix: 16) + 0xFF000000);
+            }
+          });
+          _teethConditionNames.clear();
+          teethConditions.forEach((tooth, disease) {
+            _teethConditionNames[tooth] = disease;
+          });
+          _examData['dentalChart'] = {
+            'selectedTeeth': selectedTeeth,
+            'teethConditions': teethConditions,
+          };
+        }
+        if (oldExam['periodontalChart'] != null && oldExam['periodontalChart'] is Map) {
+          _examData['periodontalChart'] = Map<String, dynamic>.from(oldExam['periodontalChart']);
+        }
+      }
+    } else if (widget.patientData != null && widget.patientData!['dentalChart'] != null) {
+      final dentalChart = widget.patientData!['dentalChart'] as Map<String, dynamic>?;
+      if (dentalChart != null) {
+        final selectedTeeth = dentalChart['selectedTeeth'] as List<dynamic>?;
+        if (selectedTeeth != null) {
+          _examData['dentalChart']['selectedTeeth'] = selectedTeeth.map((e) => e.toString()).toList();
+        }
+        final conditions = dentalChart['teethConditions'] as Map<String, dynamic>?;
+        if (conditions != null) {
+          _teethColors = conditions.map((key, value) {
+            if (value != null) {
+              return MapEntry(key, Color(int.parse(value.toString(), radix: 16)));
+            }
+            return MapEntry(key, Colors.white);
+          });
+        }
+      }
     }
   }
+
+  Future<void> _loadPreviousExaminationIfExists() async {
+    try {
+      final response = await http.get(Uri.parse('http://localhost:3000/examinations/${widget.patientId}'));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['examData'] != null) {
+          final loadedExamData = data['examData'] as Map<String, dynamic>;
+          List<String> loadedSelectedTeeth = [];
+          Map<String, Color> loadedTeethColors = {};
+          if (loadedExamData['dentalChart'] != null && loadedExamData['dentalChart'] is Map) {
+            final dentalChart = loadedExamData['dentalChart'] as Map;
+            if (dentalChart['selectedTeeth'] is List) {
+              loadedSelectedTeeth = (dentalChart['selectedTeeth'] as List).map((e) => e.toString()).toList();
+            }
+            if (dentalChart['teethConditions'] != null) {
+              final teethConds = Map<String, dynamic>.from(dentalChart['teethConditions']);
+              final diseaseColorMap = {
+                'Mobile Tooth': 0xFF1976D2,
+                'Unrestorable Tooth': 0xFFD32F2F,
+                'Supernumerary': 0xFF7B1FA2,
+                'Tender to Percussion': 0xFFFFA000,
+                'Root Canal Therapy': 0xFF388E3C,
+                'Over Retained': 0xFF0097A7,
+                'Caries': 0xFF795548,
+                'Missing Tooth': 0xFF616161,
+                'Filling': 0xFFFFD600,
+                'Crown': 0xFFFF7043,
+                'Implant': 0xFF43A047,
+              };
+              teethConds.forEach((key, value) {
+                if (value is String && diseaseColorMap.containsKey(value)) {
+                  loadedTeethColors[key.toString()] = Color(diseaseColorMap[value]!);
+                } else if (value is String && value.length == 6 && int.tryParse(value, radix: 16) != null) {
+                  loadedTeethColors[key.toString()] = Color(int.parse(value, radix: 16) + 0xFF000000);
+                }
+              });
+              _teethConditionNames.clear();
+              teethConds.forEach((key, value) {
+                if (value is String) {
+                  _teethConditionNames[key] = value;
+            }
+              });
+          }
+          }
+          if (!mounted) return;
+          setState(() {
+            _examData.clear();
+            loadedExamData['periodontalChart'] =
+                loadedExamData['periodontalChart'] is Map<String, dynamic>
+                    ? loadedExamData['periodontalChart']
+                    : Map<String, dynamic>.from(loadedExamData['periodontalChart'] as Map);
+            if (loadedExamData['dentalChart'] != null) {
+              loadedExamData['dentalChart'] =
+                  loadedExamData['dentalChart'] is Map<String, dynamic>
+                      ? loadedExamData['dentalChart']
+                      : Map<String, dynamic>.from(loadedExamData['dentalChart'] as Map);
+              if (loadedExamData['dentalChart']['teethConditions'] != null) {
+                loadedExamData['dentalChart']['teethConditions'] =
+                    loadedExamData['dentalChart']['teethConditions'] is Map<String, dynamic>
+                        ? loadedExamData['dentalChart']['teethConditions']
+                        : Map<String, dynamic>.from(loadedExamData['dentalChart']['teethConditions'] as Map);
+              }
+              loadedExamData['dentalChart']['selectedTeeth'] = loadedSelectedTeeth;
+            }
+            _examData.addAll(loadedExamData);
+            if (loadedTeethColors.isNotEmpty) {
+              _teethColors = loadedTeethColors;
+            }
+          });
+          _onExamChanged();
+        }
+        if (data['screening'] != null) {
+          final screening = data['screening'] as Map<String, dynamic>;
+          if (!mounted) return;
+          setState(() {
+            _screeningData = screening;
+          });
+          _onExamChanged();
+        }
+      }
+    } catch (e) {
+      debugPrint('Error loading previous examination: $e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadLocalExamData() async {
+    final prefs = await SharedPreferences.getInstance();
+    final examDataStr = prefs.getString('initial_exam_data');
+    final screeningDataStr = prefs.getString('initial_screening_data');
+    if (examDataStr != null) {
+      setState(() {
+        _examData.clear();
+        _examData.addAll(jsonDecode(examDataStr));
+      });
+    }
+    if (screeningDataStr != null) {
+      setState(() {
+        _screeningData = jsonDecode(screeningDataStr);
+      });
+    }
+  }
+
+  Future<void> _saveLocalExamData() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('initial_exam_data', jsonEncode(_examData));
+    if (_screeningData != null) {
+      await prefs.setString('initial_screening_data', jsonEncode(_screeningData));
+    }
+  }
+
+  void _onExamChanged() {
+    _saveLocalExamData();
+  }
+
   Future<void> _saveTabIndex(int index) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('initial_exam_tab_index', index);
@@ -51,7 +287,61 @@ class _InitialExaminationState extends State<InitialExamination> with SingleTick
       _tabController.index = savedIndex;
     }
   }
-  // جميع دوال البناء يجب أن تكون هنا قبل buildScreeningFormTab وbuildClinicalExaminationTab
+
+  void _updateExamData(String key, dynamic value) {
+    setState(() => _examData[key] = value);
+    _onExamChanged();
+  }
+
+  void _updateChart(String area, int value) {
+    setState(() => _examData['periodontalChart'][area] = value);
+    _onExamChanged();
+  }
+
+  void _updateDentalChart(List<String> selectedTeeth) {
+    setState(() {
+      if (_examData['dentalChart'] == null || _examData['dentalChart'] is! Map) {
+        _examData['dentalChart'] = <String, dynamic>{
+          'selectedTeeth': <String>[],
+          'teethConditions': <String, String>{},
+        };
+      } else if (_examData['dentalChart'] is! Map<String, dynamic>) {
+        _examData['dentalChart'] = Map<String, dynamic>.from(_examData['dentalChart'] as Map);
+      }
+      final Map<String, dynamic> dentalChart = _examData['dentalChart'] as Map<String, dynamic>;
+      final List<String> oldSelected = (dentalChart['selectedTeeth'] is List)
+          ? List<String>.from((dentalChart['selectedTeeth'] as List).map((e) => e.toString()))
+          : <String>[];
+      final Set<String> mergedSelected = {...oldSelected, ...selectedTeeth};
+      dentalChart['selectedTeeth'] = mergedSelected.toList();
+
+      final Map<String, String> oldConditions = (dentalChart['teethConditions'] is Map)
+          ? Map<String, String>.from(dentalChart['teethConditions'] as Map)
+          : <String, String>{};
+      final Map<String, String> teethConditions = Map<String, String>.from(oldConditions);
+      _teethColors.forEach((tooth, value) {
+        if (mergedSelected.contains(tooth)) {
+          if (_teethConditionNames.containsKey(tooth)) {
+            teethConditions[tooth] = _teethConditionNames[tooth]!;
+          }
+        }
+      });
+      dentalChart['teethConditions'] = teethConditions;
+    });
+    _onExamChanged();
+  }
+
+  double getResponsiveFontSize(BuildContext context, {double base = 18, double min = 12}) {
+    final width = MediaQuery.of(context).size.width;
+    if (width < 400) {
+      return min;
+    } else if (width < 600) {
+      return (base + min) / 2;
+    } else {
+      return base;
+    }
+  }
+
   Widget _buildScreeningFormTab() {
     return ScreeningForm(
       patientData: widget.patientData,
@@ -73,7 +363,8 @@ class _InitialExaminationState extends State<InitialExamination> with SingleTick
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (widget.patientData != null) _buildPatientInfo(),
+            if (widget.patientData != null)
+              Center(child: _buildPatientInfo()),
             _buildSection('Extraoral Examination', [
               _buildRadioGroup(
                 title: 'TMJ',
@@ -141,292 +432,46 @@ class _InitialExaminationState extends State<InitialExamination> with SingleTick
             _buildSection('Dental Chart', [
               _buildDentalChart(),
             ]),
+            _buildDentalNotesSection(),
+            const SizedBox(height: 16),
+            Directionality(
+              textDirection: TextDirection.ltr,
+              child: Card(
+                margin: const EdgeInsets.only(bottom: 16),
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Dental Form Table',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                          textAlign: TextAlign.left,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      DentalFormTable(
+                        initialData: _dentalFormTableData.isNotEmpty ? _dentalFormTableData : (widget.examinationData != null && widget.examinationData!['examData'] != null && widget.examinationData!['examData']['dentalFormTable'] is Map<String, dynamic>
+                          ? Map<String, bool>.from(widget.examinationData!['examData']['dentalFormTable'] as Map)
+                          : null),
+                        onChanged: (data) {
+                          setState(() {
+                            _dentalFormTableData = data;
+                          });
+                          _onExamChanged();
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ],
         ),
       ),
     );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Initial Examination'),
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: const [
-            Tab(text: 'Screening Form'),
-            Tab(text: 'Clinical Examination'),
-          ],
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.save),
-            onPressed: _submitExamination,
-          ),
-        ],
-      ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          _buildScreeningFormTab(),
-          _buildClinicalExaminationTab(),
-        ],
-      ),
-    );
-  }
-  late TabController _tabController;
-  final Map<String, dynamic> _examData = {
-    'tmj': 'Normal',
-    'lymphNode': 'Normal',
-    'patientProfile': 'Straight',
-    'lipCompetency': 'Competent',
-    'incisalClassification': 'Class I',
-    'overjet': 'Normal',
-    'overbite': 'Normal',
-    'hardPalate': 'Normal',
-    'buccalMucosa': 'Normal',
-    'floorOfMouth': 'Normal',
-    'edentulousRidge': 'Well-developed ridge',
-    'periodontalRisk': 'Low',
-    'periodontalChart': {
-      'Upper right posterior': 0,
-      'Upper anterior': 0,
-      'Upper left posterior': 0,
-      'Lower right posterior': 0,
-      'Lower anterior': 0,
-      'Lower left posterior': 0,
-    },
-    'dentalChart': {
-      'selectedTeeth': <String>[],
-      'teethConditions': <String, String>{},
-    }
-  };
-
-  final DatabaseReference _database = FirebaseDatabase.instance.ref();
-  Map<String, Color> _teethColors = {};
-  Map<String, dynamic>? _screeningData;
-
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 2, vsync: this);
-    _loadTabIndex();
-    _tabController.addListener(() {
-      if (_tabController.indexIsChanging) {
-        _saveTabIndex(_tabController.index);
-      }
-    });
-    _loadLocalExamData();
-    // تحميل بيانات الفحص السابق إن وجدت
-    _loadPreviousExaminationIfExists();
-    // لا تعتمد على patientData['id'] نهائياً، فقط تحقق من widget.patientId
-    assert(widget.patientId.isNotEmpty, 'patientId (user id) must not be empty');
-    if (widget.patientData != null && widget.patientData!['dentalChart'] != null) {
-      final dentalChart = widget.patientData!['dentalChart'] as Map<String, dynamic>?;
-      if (dentalChart != null) {
-        final selectedTeeth = dentalChart['selectedTeeth'] as List<dynamic>?;
-        if (selectedTeeth != null) {
-          _examData['dentalChart']['selectedTeeth'] = selectedTeeth.map((e) => e.toString()).toList();
-        }
-
-        final conditions = dentalChart['teethConditions'] as Map<String, dynamic>?;
-        if (conditions != null) {
-          _teethColors = conditions.map((key, value) {
-            if (value != null) {
-              return MapEntry(key, Color(int.parse(value.toString(), radix: 16)));
-            }
-            return MapEntry(key, Colors.white);
-          });
-        }
-      }
-    }
-  }
-
-  // دالة لتحميل بيانات الفحص السابق من Firebase
-  Future<void> _loadPreviousExaminationIfExists() async {
-    try {
-      final snapshot = await _database.child('examinations').child(widget.patientId).get();
-      if (snapshot.exists) {
-        final dataRaw = snapshot.value;
-        final Map<String, dynamic> data = dataRaw is Map<String, dynamic>
-            ? dataRaw
-            : Map<String, dynamic>.from(dataRaw as Map);
-        if (data['examData'] != null) {
-          final examDataRaw = data['examData'];
-          final loadedExamData = examDataRaw is Map<String, dynamic>
-              ? examDataRaw
-              : Map<String, dynamic>.from(examDataRaw as Map);
-
-          // تحديث selectedTeeth وteethConditions
-          List<String> loadedSelectedTeeth = [];
-          Map<String, Color> loadedTeethColors = {};
-          if (loadedExamData['dentalChart'] != null && loadedExamData['dentalChart'] is Map) {
-            final dentalChart = loadedExamData['dentalChart'] as Map;
-            // selectedTeeth
-            if (dentalChart['selectedTeeth'] is List) {
-              loadedSelectedTeeth = (dentalChart['selectedTeeth'] as List).map((e) => e.toString()).toList();
-            }
-            // teethConditions
-            if (dentalChart['teethConditions'] != null) {
-              final teethCondsRaw = dentalChart['teethConditions'];
-              final teethConds = teethCondsRaw is Map<String, dynamic>
-                  ? teethCondsRaw
-                  : Map<String, dynamic>.from(teethCondsRaw as Map);
-              // إذا كانت القيمة اسم مرض، حولها إلى لون
-              final diseaseColorMap = {
-                'Mobile Tooth': 0xFF1976D2,
-                'Unrestorable Tooth': 0xFFD32F2F,
-                'Supernumerary': 0xFF7B1FA2,
-                'Tender to Percussion': 0xFFFFA000,
-                'Root Canal Therapy': 0xFF388E3C,
-                'Over Retained': 0xFF0097A7,
-                'Caries': 0xFF795548,
-                'Missing Tooth': 0xFF616161,
-                'Filling': 0xFFFFD600,
-                'Crown': 0xFFFF7043,
-                'Implant': 0xFF43A047,
-              };
-              teethConds.forEach((key, value) {
-                if (value is String && diseaseColorMap.containsKey(value)) {
-                  loadedTeethColors[key.toString()] = Color(diseaseColorMap[value]!);
-                } else if (value is String && value.length == 6 && int.tryParse(value, radix: 16) != null) {
-                  loadedTeethColors[key.toString()] = Color(int.parse(value, radix: 16) + 0xFF000000);
-                }
-              });
-            }
-          }
-
-          if (!mounted) return;
-          setState(() {
-            _examData.clear();
-            // تحويل جميع الحقول الفرعية إلى Map<String, dynamic> إذا لزم الأمر
-            loadedExamData['periodontalChart'] =
-                loadedExamData['periodontalChart'] is Map<String, dynamic>
-                    ? loadedExamData['periodontalChart']
-                    : Map<String, dynamic>.from(loadedExamData['periodontalChart'] as Map);
-            if (loadedExamData['dentalChart'] != null) {
-              loadedExamData['dentalChart'] =
-                  loadedExamData['dentalChart'] is Map<String, dynamic>
-                      ? loadedExamData['dentalChart']
-                      : Map<String, dynamic>.from(loadedExamData['dentalChart'] as Map);
-              if (loadedExamData['dentalChart']['teethConditions'] != null) {
-                loadedExamData['dentalChart']['teethConditions'] =
-                    loadedExamData['dentalChart']['teethConditions'] is Map<String, dynamic>
-                        ? loadedExamData['dentalChart']['teethConditions']
-                        : Map<String, dynamic>.from(loadedExamData['dentalChart']['teethConditions'] as Map);
-              }
-              // تحديث selectedTeeth
-              loadedExamData['dentalChart']['selectedTeeth'] = loadedSelectedTeeth;
-            }
-            _examData.addAll(loadedExamData);
-            if (loadedTeethColors.isNotEmpty) {
-              _teethColors = loadedTeethColors;
-            }
-          });
-          _onExamChanged();
-        }
-        if (data['screening'] != null) {
-          final screeningRaw = data['screening'];
-          final screening = screeningRaw is Map<String, dynamic>
-              ? screeningRaw
-              : Map<String, dynamic>.from(screeningRaw as Map);
-          if (!mounted) return;
-          setState(() {
-            _screeningData = screening;
-          });
-          _onExamChanged();
-        }
-      }
-    } catch (e) {
-      debugPrint('Error loading previous examination: $e');
-    }
-  }
-
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _loadLocalExamData() async {
-    final prefs = await SharedPreferences.getInstance();
-    final examDataStr = prefs.getString('initial_exam_data');
-    final screeningDataStr = prefs.getString('initial_screening_data');
-    if (examDataStr != null) {
-      setState(() {
-        _examData.clear();
-        _examData.addAll(jsonDecode(examDataStr));
-      });
-    }
-    if (screeningDataStr != null) {
-      setState(() {
-        _screeningData = jsonDecode(screeningDataStr);
-      });
-    }
-  }
-
-  Future<void> _saveLocalExamData() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('initial_exam_data', jsonEncode(_examData));
-    if (_screeningData != null) {
-      await prefs.setString('initial_screening_data', jsonEncode(_screeningData));
-    }
-  }
-
-  void _onExamChanged() {
-    _saveLocalExamData();
-  }
-
-  void _updateExamData(String key, dynamic value) {
-    setState(() => _examData[key] = value);
-    _onExamChanged();
-  }
-
-  void _updateChart(String area, int value) {
-    setState(() => _examData['periodontalChart'][area] = value);
-    _onExamChanged();
-  }
-
-  void _updateDentalChart(List<String> selectedTeeth) {
-    setState(() {
-      if (_examData['dentalChart'] == null || _examData['dentalChart'] is! Map) {
-        _examData['dentalChart'] = <String, dynamic>{
-          'selectedTeeth': <String>[],
-          'teethConditions': <String, String>{},
-        };
-      } else if (_examData['dentalChart'] is! Map<String, dynamic>) {
-        _examData['dentalChart'] = Map<String, dynamic>.from(_examData['dentalChart'] as Map);
-      }
-      final Map<String, dynamic> dentalChart = _examData['dentalChart'] as Map<String, dynamic>;
-      // حفظ جميع الأسنان المحددة
-      dentalChart['selectedTeeth'] = selectedTeeth;
-      // حفظ اسم المرض فقط للأسنان التي تم تحديد حالة لها
-      final diseaseColorMap = {
-        '1976d2': 'Mobile Tooth',
-        'd32f2f': 'Unrestorable Tooth',
-        '7b1fa2': 'Supernumerary',
-        'ffa000': 'Tender to Percussion',
-        '388e3c': 'Root Canal Therapy',
-        '0097a7': 'Over Retained',
-        '795548': 'Caries',
-        '616161': 'Missing Tooth',
-        'ffd600': 'Filling',
-        'ff7043': 'Crown',
-        '43a047': 'Implant',
-      };
-      final Map<String, String> teethConditions = {};
-      _teethColors.forEach((tooth, value) {
-        if (selectedTeeth.contains(tooth)) {
-          // ignore: deprecated_member_use
-          final hex = value.value.toRadixString(16).padLeft(8, '0').substring(2);
-          final disease = diseaseColorMap[hex] ?? hex;
-          teethConditions[tooth] = disease;
-        }
-      });
-      dentalChart['teethConditions'] = teethConditions;
-    });
-    _onExamChanged();
   }
 
   Widget _buildPatientInfo() {
@@ -458,16 +503,23 @@ class _InitialExaminationState extends State<InitialExamination> with SingleTick
 
   Widget _buildSection(String title, List<Widget> children) => Card(
     margin: const EdgeInsets.only(bottom: 16),
+    child: Directionality(
+      textDirection: TextDirection.ltr,
     child: Padding(
       padding: const EdgeInsets.all(12.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: TextStyle(fontSize: getResponsiveFontSize(context, base: 18, min: 12), fontWeight: FontWeight.bold)),
+            Text(
+              title,
+              style: TextStyle(fontSize: getResponsiveFontSize(context, base: 18, min: 12), fontWeight: FontWeight.bold),
+              textAlign: TextAlign.left,
+            ),
           const SizedBox(height: 8),
           ...children,
         ],
       ),
+    ),
     ),
   );
 
@@ -478,15 +530,55 @@ class _InitialExaminationState extends State<InitialExamination> with SingleTick
   }) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      Text(title, style: TextStyle(fontWeight: FontWeight.bold, fontSize: getResponsiveFontSize(context, base: 16, min: 11))),
-      ...options.map((option) => RadioListTile<String>(
-        title: Text(option, style: TextStyle(fontSize: getResponsiveFontSize(context, base: 16, min: 11))),
+    Text(
+      title, 
+      style: TextStyle(
+        fontWeight: FontWeight.bold, 
+        fontSize: getResponsiveFontSize(context, base: 16, min: 11)
+      ),
+    ),
+    const SizedBox(height: 8),
+    ...options.map((option) => Container(
+      constraints: BoxConstraints(
+        minHeight: 48, // Fixed height for consistent touch targets
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => _updateExamData(key, option),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 24, // Fixed width for radio button
+                  height: 24,
+                  child: Radio<String>(
         value: option,
         groupValue: _examData[key] as String? ?? '',
-        onChanged: (v) => v != null ? _updateExamData(key, v) : null,
+                    activeColor: const Color(0xFF2A7A94),
+                    onChanged: (v) => _updateExamData(key, v!),
+                  ),
+                ),
+                const SizedBox(width: 12), // Consistent spacing
+                Expanded( // ← This ensures the text doesn't overflow
+                  child: Text(
+                    option, 
+                    style: TextStyle(
+                      fontSize: getResponsiveFontSize(context, base: 16, min: 11)
+                    ),
+                    overflow: TextOverflow.visible,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
       )),
     ],
   );
+ 
 
   Widget _buildPeriodontalChart() => Column(
     children: [
@@ -503,6 +595,7 @@ class _InitialExaminationState extends State<InitialExamination> with SingleTick
                   title: Text('$index', style: TextStyle(fontSize: getResponsiveFontSize(context, base: 16, min: 11))),
                   value: index,
                   groupValue: entry.value as int? ?? 0,
+                  activeColor: const Color(0xFF2A7A94),
                   onChanged: (v) => v != null ? _updateChart(entry.key, v) : null,
                 ),
               ))),
@@ -520,7 +613,15 @@ class _InitialExaminationState extends State<InitialExamination> with SingleTick
 
   Widget _buildDentalChart() => Column(
     children: [
-      SizedBox(
+      Builder(
+        builder: (context) {
+          final chart = _examData['dentalChart'];
+          List<String> selectedTeeth = <String>[];
+          if (chart is Map && chart['selectedTeeth'] is List) {
+            selectedTeeth = (chart['selectedTeeth'] as List).map((e) => e.toString()).toList();
+          }
+          debugPrint('selectedTeeth for chart: $selectedTeeth');
+          return SizedBox(
         height: 600,
         child: FittedBox(
           fit: BoxFit.contain,
@@ -529,13 +630,18 @@ class _InitialExaminationState extends State<InitialExamination> with SingleTick
             onChange: (selectedTeeth) {
               _updateDentalChart(selectedTeeth.cast<String>());
             },
-            initiallySelected: (() {
+                onDiseaseChange: (tooth, disease) {
+                  setState(() {
+                    _teethConditionNames[tooth] = disease;
               final chart = _examData['dentalChart'];
+                    List<String> selectedTeeth = <String>[];
               if (chart is Map && chart['selectedTeeth'] is List) {
-                return (chart['selectedTeeth'] as List).cast<String>();
+                      selectedTeeth = (chart['selectedTeeth'] as List).map((e) => e.toString()).toList();
               }
-              return <String>[];
-            })(),
+                    _updateDentalChart(selectedTeeth);
+                  });
+                },
+                initiallySelected: selectedTeeth,
             colorized: Map<String, Color>.from(_teethColors),
             onColorUpdate: (colors) {
               setState(() {
@@ -546,25 +652,70 @@ class _InitialExaminationState extends State<InitialExamination> with SingleTick
             textStyle: TextStyle(fontSize: getResponsiveFontSize(context, base: 16, min: 11)),
           ),
         ),
+          );
+        },
       ),
       const SizedBox(height: 16),
       _buildTeethConditionsLegend(),
+      const SizedBox(height: 16),
     ],
   );
 
+  Widget _buildDentalNotesSection() {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      child: Directionality(
+        textDirection: TextDirection.ltr,
+        child: Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Dental Chart Notes (Optional):',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: getResponsiveFontSize(context, base: 15, min: 11)),
+                textAlign: TextAlign.left,
+              ),
+              const SizedBox(height: 4),
+              TextFormField(
+                initialValue: _dentalChartNotes,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  hintText: 'Enter any notes related to the dental chart...'
+                ),
+                textAlign: TextAlign.left,
+                onChanged: (val) {
+                  setState(() {
+                    _dentalChartNotes = val;
+                    if (_examData['dentalChart'] != null && _examData['dentalChart'] is Map) {
+                      (_examData['dentalChart'] as Map<String, dynamic>)['notes'] = val;
+                    }
+                  });
+                  _onExamChanged();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildTeethConditionsLegend() {
     final conditions = {
-      'Mobile Tooth': const Color(0xFF1976D2),         // Blue
-      'Unrestorable Tooth': const Color(0xFFD32F2F),  // Red
-      'Supernumerary': const Color(0xFF7B1FA2),       // Purple
-      'Tender to Percussion': const Color(0xFFFFA000),// Orange
-      'Root Canal Therapy': const Color(0xFF388E3C),  // Green
-      'Over Retained': const Color(0xFF0097A7),       // Cyan
-      'Caries': const Color(0xFF795548),              // Brown
-      'Missing Tooth': const Color(0xFF616161),       // Grey
-      'Filling': const Color(0xFFFFD600),             // Yellow
-      'Crown': const Color(0xFFFF7043),               // Deep Orange
-      'Implant': const Color(0xFF43A047),             // Dark Green
+      'Mobile Tooth': const Color(0xFF1976D2),
+      'Unrestorable Tooth': const Color(0xFFD32F2F),
+      'Supernumerary': const Color(0xFF7B1FA2),
+      'Tender to Percussion': const Color(0xFFFFA000),
+      'Root Canal Therapy': const Color(0xFF388E3C),
+      'Over Retained': const Color(0xFF0097A7),
+      'Caries': const Color(0xFF795548),
+      'Missing Tooth': const Color(0xFF616161),
+      'Filling': const Color(0xFFFFD600),
+      'Crown': const Color(0xFFFF7043),
+      'Implant': const Color(0xFF43A047),
     };
     final fontSize = getResponsiveFontSize(context, base: 14, min: 10);
     return SingleChildScrollView(
@@ -592,277 +743,189 @@ class _InitialExaminationState extends State<InitialExamination> with SingleTick
     );
   }
 
-  Future<void> _submitExamination() async {
-    try {
-      // استخدم دومًا معرف المستخدم الحقيقي الممرر عبر widget.patientId
-      final patientId = widget.patientId;
-      debugPrint('Submitting examination for patientId: $patientId');
-      if (patientId.isEmpty) {
-        throw Exception('Patient ID is empty');
-      }
-      // أضف userId داخل examData وأضف id أيضاً
-      final Map<String, dynamic> examDataWithId = Map<String, dynamic>.from(_examData);
-      examDataWithId['userId'] = patientId;
-      examDataWithId['id'] = patientId; // إضافة id
-      final examRecord = {
-        'patientId': patientId,
-        'id': patientId, // إضافة id في السجل الرئيسي أيضاً
-        'doctorId': widget.doctorId,
-        'timestamp': ServerValue.timestamp,
-        'examData': examDataWithId,
-        'screening': _screeningData,
-      };
-      // احفظ الفحص مباشرة تحت examinations/{patientId} (فحص واحد فقط لكل مريض)
-      await _database.child('examinations').child(patientId).set(examRecord);
-
-      // حذف بيانات الفحص المحفوظة محليًا بعد الحفظ على الداتا بيس
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('initial_exam_data');
-      await prefs.remove('initial_screening_data');
-
-      // حذف المريض من قائمة الانتظار بعد الحفظ باستخدام waitingListId الصحيح
-      String? waitingListId;
-      if (widget.patientData != null && widget.patientData!['id'] != null && widget.patientData!['id'].toString().isNotEmpty) {
-        waitingListId = widget.patientData!['id'].toString();
-      } else {
-        waitingListId = patientId;
-      }
-      await FirebaseDatabase.instance.ref('waitingList').child(waitingListId).remove();
-
-      if (!mounted) return;
-
-      // بعد الحفظ، أظهر دايالوج فيه خيارين: توزيع تلقائي أو محجوز
-      final result = await showDialog<String>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('إسناد المريض للطالب'),
-          content: const Text('هل تريد توزيع المريض تلقائيًا على طالب المادة الأقل حالات أم حجزه لطالب معين؟'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop('manual'),
-              child: const Text('محجوز'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop('auto'),
-              child: const Text('توزيع تلقائي'),
-            ),
-          ],
+  @override
+  Widget build(BuildContext context) {
+    const mainColor = Color(0xFF2A7A94);
+    return Theme(
+      data: Theme.of(context).copyWith(
+        inputDecorationTheme: const InputDecorationTheme(
+          focusedBorder: OutlineInputBorder(
+            borderSide: BorderSide(color: Color(0xFF2A7A94), width: 2),
+          ),
+          border: OutlineInputBorder(),
+          focusColor: Color(0xFF2A7A94),
         ),
-      );
-
-      if (result == 'auto') {
-        // جلب قائمة المواد (courseId واسم المادة) من studyGroups
-        final courses = await _fetchCourses();
-        if (!mounted) return;
-        if (courses.isEmpty) {
-          await showDialog(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Text('لا توجد مواد متاحة'),
-              content: const Text('لم يتم العثور على مواد في قاعدة البيانات. يرجى إضافة مواد أولاً.'),
+        colorScheme: Theme.of(context).colorScheme.copyWith(primary: mainColor),
+      ),
+      child: Scaffold(
+        appBar: AppBar(
+          backgroundColor: mainColor,
+          foregroundColor: Colors.white,
+          title: const Text('Initial Examination', style: TextStyle(color: Colors.white)),
+          bottom: TabBar(
+            controller: _tabController,
+            tabs: const [
+              Tab(text: 'Screening Form'),
+              Tab(text: 'Clinical Examination'),
+            ],
+            labelColor: Colors.white,
+            unselectedLabelColor: Colors.white70,
+            indicatorColor: Colors.white,
+          ),
               actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('إغلاق'),
+            IconButton(
+              icon: const Icon(Icons.save, color: Colors.white),
+              onPressed: _submitExamination,
                 ),
               ],
             ),
-          );
-          return;
-        }
-        String? selectedCourseId;
-        selectedCourseId = await showDialog<String>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('اختر المادة'),
-            content: SizedBox(
-              width: 300,
-              child: ListView(
-                shrinkWrap: true,
-                children: courses.map((course) => ListTile(
-                  title: Text((course['name'] ?? course['id'] ?? '').toString()),
-                  onTap: () => Navigator.of(context).pop(course['id']),
-                )).toList(),
-              ),
+        body: TabBarView(
+          controller: _tabController,
+          children: [
+            _buildScreeningFormTab(),
+            _buildClinicalExaminationTab(),
+          ],
             ),
           ),
         );
-        if (selectedCourseId != null) {
-          // ignore: duplicate_ignore
-          // ignore: use_build_context_synchronously
-          final assignResult = await _assignPatientToStudentAuto(context, patientId, selectedCourseId, patientData: widget.patientData);
-          if (!mounted) return;
-          if (assignResult is Map && assignResult['studentName'] != null && assignResult['courseLabel'] != null) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('تم توزيع المريض تلقائيًا على الطالب: ${assignResult['studentName']}\nالمادة: ${assignResult['courseLabel']}')),
-            );
-            Navigator.pop(context);
-          } else if (assignResult == true) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('تم توزيع المريض تلقائيًا.')),
-            );
-            Navigator.pop(context);
-          }
-          // إذا لم يتم التوزيع (assigned == false)، لا تغلق الصفحة ولا تظهر رسالة نجاح، فقط رسالة عدم وجود طالب متاح ستظهر من داخل الدالة
+  }
+
+  void _updateTeethConditions() {
+    if (_examData['dentalChart'] != null && _examData['dentalChart'] is Map) {
+      final Map<String, dynamic> dentalChart = _examData['dentalChart'];
+      final diseaseColorMap = {
+        '1976d2': 'Mobile Tooth',
+        'd32f2f': 'Unrestorable Tooth',
+        '7b1fa2': 'Supernumerary',
+        'ffa000': 'Tender to Percussion',
+        '388e3c': 'Root Canal Therapy',
+        '0097a7': 'Over Retained',
+        '795548': 'Caries',
+        '616161': 'Missing Tooth',
+        'ffd600': 'Filling',
+        'ff7043': 'Crown',
+        '43a047': 'Implant',
+      };
+      
+      final Map<String, String> teethConditions = {};
+      
+      _teethConditionNames.forEach((tooth, disease) {
+        if (disease.isNotEmpty) {
+          teethConditions[tooth] = disease;
         }
-      } else {
-        // إذا لم يكن تلقائي (محجوز أو إلغاء)، فقط احفظ الحالة واغلق الصفحة
-        Navigator.pop(context);
+      });
+      
+      _teethColors.forEach((tooth, value) {
+        if (!teethConditions.containsKey(tooth)) {
+          final hex = value.value.toRadixString(16).padLeft(8, '0').substring(2);
+          String disease = diseaseColorMap[hex] ?? hex;
+          teethConditions[tooth] = disease;
+  }
+      });
+      
+      dentalChart['teethConditions'] = teethConditions;
+      dentalChart['notes'] = _dentalChartNotes;
+    }
+  }
+
+Future<void> _submitExamination() async {
+  try {
+    setState(() {
+      _examData['dentalFormTable'] = _dentalFormTableData;
+      if (_examData['dentalChart'] != null && _examData['dentalChart'] is Map) {
+        (_examData['dentalChart'] as Map<String, dynamic>)['notes'] = _dentalChartNotes;
       }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Error: e.toString()}')),
+      _updateTeethConditions();
+    });
+
+    await Future.delayed(const Duration(milliseconds: 100));
+
+    final patientId = widget.patientId;
+    final examId = 'EXAM_${DateTime.now().millisecondsSinceEpoch}';
+
+    final examRecord = {
+      'exam_id': examId,
+      'patient_uid': patientId,
+      'doctor_id': widget.doctorId,
+      'exam_date': DateTime.now().toIso8601String(),
+      'exam_data': jsonEncode(_examData),
+      'screening_data': jsonEncode(_screeningData ?? {}),
+      'dental_form_data': jsonEncode(_dentalFormTableData),
+      'notes': _dentalChartNotes,
+    };
+
+    debugPrint('Saving examination for patient: $patientId');
+
+    final response = await http.post(
+      Uri.parse('http://localhost:3000/examinations'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode(examRecord),
+    );
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      debugPrint('✅ Examination saved successfully!');
+
+      // تحديث حالة المريض
+      await http.put(
+        Uri.parse('http://localhost:3000/patients/$patientId/status'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'status': 'EXAMINED'}),
       );
-    }
-  }
 
-  // جلب المواد من جدول studyGroups في قاعدة البيانات
-  // تم حذف دالة _fetchSubjects لأنها لم تعد مستخدمة
-
-  // جلب قائمة المواد (courseId واسم المادة) من studyGroups
-  Future<List<Map<String, String>>> _fetchCourses() async {
-    final snapshot = await FirebaseDatabase.instance.ref('studyGroups').get();
-    final data = snapshot.value;
-    final List<Map<String, String>> courses = [];
-    final Set<String> seenIds = {};
-    if (data is Map) {
-      for (final entry in data.entries) {
-        final group = entry.value;
-        if (group is Map && group['courseId'] != null) {
-          final id = group['courseId'].toString();
-          // استخدم courseName إذا وجد، وإلا subject، وإلا id
-          String name = '';
-          if (group['courseName'] != null && group['courseName'].toString().trim().isNotEmpty) {
-            name = group['courseName'].toString();
-          } else if (group['subject'] != null && group['subject'].toString().trim().isNotEmpty) {
-            name = group['subject'].toString();
-          } else {
-            name = id;
-          }
-          if (!seenIds.contains(id)) {
-            courses.add({'id': id, 'name': name});
-            seenIds.add(id);
-          }
-        }
-      }
-    }
-    return courses;
-  }
-  }
-
-  // توزيع تلقائي: إيجاد الطالب الأقل حالات في المادة وإسناد المريض له
-  Future<dynamic> _assignPatientToStudentAuto(BuildContext context, String patientId, String subject, {Map<String, dynamic>? patientData}) async {
-    // جلب جميع الشعب التي تحتوي على نفس المادة (courseId)
-    final studyGroupsSnap = await FirebaseDatabase.instance.ref('studyGroups').get();
-    final studyGroups = studyGroupsSnap.value as Map<dynamic, dynamic>?;
-    if (studyGroups == null) return false;
-    // جمع كل الطلاب في جميع الشعب التي تحتوي على نفس المادة
-    final Set<String> studentIds = {};
-    for (final entry in studyGroups.entries) {
-      final group = entry.value;
-      if (group is Map && group['courseId'] != null && group['courseId'].toString() == subject && group['students'] is Map) {
-        final studentsMap = group['students'] as Map;
-        for (final sid in studentsMap.keys) {
-          studentIds.add(sid.toString());
-        }
-      }
-    }
-    if (studentIds.isEmpty) return false;
-
-    // جلب جميع الحالات من paedodonticsCases و surgeryCases
-    final paedoSnap = await FirebaseDatabase.instance.ref('paedodonticsCases').get();
-    final surgerySnap = await FirebaseDatabase.instance.ref('surgeryCases').get();
-    final paedoCases = paedoSnap.value as Map<dynamic, dynamic>? ?? {};
-    final surgeryCases = surgerySnap.value as Map<dynamic, dynamic>? ?? {};
-
-    // جلب allowNewCase لكل طالب في المادة
-    final allowSnap = await FirebaseDatabase.instance.ref('student_case_flags/$subject').get();
-    final allowMap = allowSnap.value as Map<dynamic, dynamic>? ?? {};
-    List<String> eligible = [];
-    for (final sid in studentIds) {
-      final flag = allowMap[sid]?.toString();
-      if (flag == '1') eligible.add(sid);
-    }
-    // إذا لم يوجد أي طالب allowNewCase=1، لا توزع الحالة وأظهر رسالة
-    if (eligible.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لا يوجد أي طالب متاح لاستلام حالة جديدة في هذه المادة حالياً.')),
-      );
-      return false;
-    }
-
-    String? minStudentId;
-    int minCount = 999999;
-    for (final sid in eligible) {
-      int count = 0;
-      count += countActiveCasesForStudentInCourse(paedoCases, sid, subject);
-      count += countActiveCasesForStudentInCourse(surgeryCases, sid, subject);
-      if (count < minCount) {
-        minCount = count;
-        minStudentId = sid;
-      }
-    }
-    if (minStudentId != null) {
-      // إسناد المريض لهذا الطالب بقيمة true فقط (بدون تفاصيل)
-      await FirebaseDatabase.instance.ref('student_patients').child(minStudentId).child(patientId).set(true);
-      // ضبط allowNewCase=0 لهذا الطالب في هذه المادة
-      await FirebaseDatabase.instance.ref('student_case_flags/$subject/$minStudentId').set(0);
-      // تجهيز اسم الطالب والمادة
-      String studentName = minStudentId;
-      String courseLabel = subject;
-      // جلب اسم الطالب
-      final studyGroupsSnap = await FirebaseDatabase.instance.ref('studyGroups').get();
-      final studyGroups = studyGroupsSnap.value as Map<dynamic, dynamic>?;
-      if (studyGroups != null) {
-        for (final entry in studyGroups.entries) {
-          final group = entry.value;
-          if (group is Map && group['courseId'] != null && group['courseId'].toString() == subject && group['students'] is Map) {
-            final studentsMap = group['students'] as Map;
-            if (studentsMap[minStudentId] is Map && studentsMap[minStudentId]['name'] != null) {
-              studentName = studentsMap[minStudentId]['name'].toString();
-            }
-            if (group['courseName'] != null && group['courseName'].toString().trim().isNotEmpty) {
-              courseLabel = group['courseName'].toString();
-            } else if (group['subject'] != null && group['subject'].toString().trim().isNotEmpty) {
-              courseLabel = group['subject'].toString();
-            }
-          }
-        }
-      }
-      // إرسال إشعار للطالب (الكود السابق يبقى كما هو)
+      // 🔥 إزالة المريض من قائمة الانتظار باستخدام WAITING_ID
       try {
-        String patientName = patientId;
-        if (patientData != null) {
-          final p = patientData;
-          final firstName = (p['firstName'] ?? '').toString().trim();
-          final fatherName = (p['fatherName'] ?? '').toString().trim();
-          final grandFatherName = (p['grandfatherName'] ?? '').toString().trim();
-          final familyName = (p['familyName'] ?? '').toString().trim();
-          final fullName = [firstName, fatherName, grandFatherName, familyName].join(' ').replaceAll(RegExp(' +'), ' ').trim();
-          if (fullName.isNotEmpty) patientName = fullName;
+        final waitingListRes = await http.get(Uri.parse('http://localhost:3000/waitingList'));
+        if (waitingListRes.statusCode == 200) {
+          final waitingListData = json.decode(waitingListRes.body);
+          
+          String? waitingId;
+          for (var item in waitingListData) {
+            if (item['PATIENT_UID']?.toString() == patientId) {
+              waitingId = item['WAITING_ID']?.toString();
+              break;
+            }
+          }
+          
+          if (waitingId != null && waitingId.isNotEmpty) {
+            final deleteRes = await http.delete(Uri.parse('http://localhost:3000/waitingList/$waitingId'));
+            if (deleteRes.statusCode == 200 || deleteRes.statusCode == 204) {
+              debugPrint('✅ Patient removed from waiting list');
+            }
+          }
         }
-        final notification = {
-          'title': 'تم إسناد حالة جديدة لك',
-          'body': 'تم إسناد الحالة "$patientName" لمادة "$courseLabel". يرجى التعامل مع الحالة بأقرب وقت ممكن.',
-          'timestamp': ServerValue.timestamp,
-          'patientId': patientId,
-          'courseId': subject,
-        };
-        await FirebaseDatabase.instance.ref('student_notifications').child(minStudentId).push().set(notification);
       } catch (e) {
-        debugPrint('Failed to send notification to student: $e');
+        debugPrint('Note: Error removing from waiting list: $e');
       }
-      // إرجاع اسم الطالب والمادة
-      return {'studentName': studentName, 'courseLabel': courseLabel};
-    }
-    return false;
-  }
-// نهاية كلاس _InitialExaminationState
 
-// نهاية كلاس _InitialExaminationState
+      if (!mounted) return;
+
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (context) => AssignPatientsToStudentPage(
+            patientId: patientId,
+            patientData: widget.patientData,
+          ),
+        ),
+      );
+
+    } else {
+      throw Exception('Failed to save examination: ${response.statusCode}');
+    }
+
+      } catch (e) {
+    debugPrint('❌ Error saving examination: $e');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error: ${e.toString()}')),
+    );
+    }
+  }
+}
+
+
 
 class TeethSelector extends StatefulWidget {
+  final void Function(String tooth, String disease)? onDiseaseChange;
   final int? age;
   final bool multiSelect;
   final Color selectedColor;
@@ -885,6 +948,7 @@ class TeethSelector extends StatefulWidget {
 
   const TeethSelector({
     super.key,
+    this.onDiseaseChange,
     this.age,
     this.multiSelect = true,
     this.selectedColor = Colors.blue,
@@ -1023,20 +1087,20 @@ class _TeethSelectorState extends State<TeethSelector> {
 
   Future<void> _handleToothTap(String key) async {
     final diseaseColors = {
-      'Mobile Tooth': const Color(0xFF1976D2),         // Blue
-      'Unrestorable Tooth': const Color(0xFFD32F2F),  // Red
-      'Supernumerary': const Color(0xFF7B1FA2),       // Purple
-      'Tender to Percussion': const Color(0xFFFFA000),// Orange
-      'Root Canal Therapy': const Color(0xFF388E3C),  // Green
-      'Over Retained': const Color(0xFF0097A7),       // Cyan
-      'Caries': const Color(0xFF795548),              // Brown
-      'Missing Tooth': const Color(0xFF616161),       // Grey
-      'Filling': const Color(0xFFFFD600),             // Yellow
-      'Crown': const Color(0xFFFF7043),               // Deep Orange
-      'Implant': const Color(0xFF43A047),             // Dark Green
+      'Mobile Tooth': const Color(0xFF1976D2),
+      'Unrestorable Tooth': const Color(0xFFD32F2F),
+      'Supernumerary': const Color(0xFF7B1FA2),
+      'Tender to Percussion': const Color(0xFFFFA000),
+      'Root Canal Therapy': const Color(0xFF388E3C),
+      'Over Retained': const Color(0xFF0097A7),
+      'Caries': const Color(0xFF795548),
+      'Missing Tooth': const Color(0xFF616161),
+      'Filling': const Color(0xFFFFD600),
+      'Crown': const Color(0xFFFF7043),
+      'Implant': const Color(0xFF43A047),
     };
 
-    final selectedDisease = await showDialog<String>(
+    String? selectedDisease = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text('اختر الحالة للسن $key'),
@@ -1062,17 +1126,50 @@ class _TeethSelectorState extends State<TeethSelector> {
       ),
     );
 
+    if (selectedDisease == 'Caries') {
+      const cariesClasses = [
+        'I', 'II', 'III', 'IV', 'V'
+      ];
+      final selectedClass = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('حدد نوع الكيرز'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: cariesClasses.map((cls) => ListTile(
+                title: Text('Class $cls'),
+                onTap: () => Navigator.of(context).pop(cls),
+              )).toList(),
+            ),
+          ),
+        ),
+      );
+      if (selectedClass != null) {
+        selectedDisease = 'caries-${selectedClass.toLowerCase()}';
+      } else {
+        return;
+      }
+    }
+
     if (selectedDisease != null) {
       setState(() {
         if (!widget.multiSelect) {
-          // Remove unnecessary null check here
           for (var k in toothSelection.keys) {
             toothSelection[k] = false;
           }
         }
 
         toothSelection[key] = true;
+        if (selectedDisease != null && (selectedDisease.startsWith('caries') || selectedDisease == 'Caries')) {
+          localColorized[key] = diseaseColors['Caries']!;
+        } else if (selectedDisease != null && diseaseColors.containsKey(selectedDisease)) {
         localColorized[key] = diseaseColors[selectedDisease]!;
+        }
+
+        if (widget.onDiseaseChange != null) {
+          widget.onDiseaseChange!(key, selectedDisease!);
+        }
 
         widget.onChange(
             toothSelection.entries

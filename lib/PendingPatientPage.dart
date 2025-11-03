@@ -1,24 +1,24 @@
 // ignore_for_file: file_names
 
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:image_picker/image_picker.dart';
 
 
 class PendingPatientPage extends StatefulWidget {
   const PendingPatientPage({super.key});
 
   static Future<Map<String, dynamic>?> getPendingUserDataByUid(String uid) async {
-    final dbRef = FirebaseDatabase.instance.ref();
-    final snapshot = await dbRef.child('pendingUsers/$uid').get();
-    if (snapshot.exists) {
-      return Map<String, dynamic>.from(snapshot.value as Map);
+    final pendingUrl = Uri.parse('http://localhost:3000/pendingUsers/$uid');
+    final pendingResp = await http.get(pendingUrl);
+    if (pendingResp.statusCode == 200) {
+      return Map<String, dynamic>.from(json.decode(pendingResp.body));
     }
-    final rejectedSnapshot = await dbRef.child('rejectedUsers/$uid').get();
-    if (rejectedSnapshot.exists) {
-      return Map<String, dynamic>.from(rejectedSnapshot.value as Map);
+    final rejectedUrl = Uri.parse('http://localhost:3000/rejectedUsers/$uid');
+    final rejectedResp = await http.get(rejectedUrl);
+    if (rejectedResp.statusCode == 200) {
+      return Map<String, dynamic>.from(json.decode(rejectedResp.body));
     }
     return null;
   }
@@ -29,13 +29,13 @@ class PendingPatientPage extends StatefulWidget {
 
 class _PendingPatientPageState extends State<PendingPatientPage> {
   String? _localImageBase64; 
+  String? _localIdImageBase64;
   bool _isUploading = false;
   bool _editSaved = false;
 
   @override
   Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
-    final uid = user?.uid ?? '';
+    const uid = 'dummyUserId';
     debugPrint('DEBUG: UID used for pending search: $uid');
     return FutureBuilder<Map<String, dynamic>?> (
       future: PendingPatientPage.getPendingUserDataByUid(uid),
@@ -150,6 +150,51 @@ class _PendingPatientPageState extends State<PendingPatientPage> {
                         ),
                       ),
                     ),
+                    // صورة الهوية تظهر دائمًا بعد صورة الحساب
+                    const SizedBox(height: 16),
+                    Column(
+                      children: [
+                        const Text('صورة الهوية', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        Center(
+                          child: Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              if (_localIdImageBase64 != null && _localIdImageBase64!.isNotEmpty)
+                                buildSafeCircleAvatar(_localIdImageBase64!, 60)
+                              else if (userData['idImage'] != null && userData['idImage'].toString().isNotEmpty)
+                                buildSafeCircleAvatar(userData['idImage'].toString(), 60)
+                              else
+                                CircleAvatar(
+                                  radius: 60,
+                                  backgroundColor: Colors.grey[200],
+                                  child: Icon(Icons.credit_card, size: 40, color: Colors.grey[600]),
+                                ),
+                              if (isRejected && fieldsToEdit.contains('idImage'))
+                                Positioned(
+                                  bottom: 0,
+                                  right: 0,
+                                  child: IconButton(
+                                    icon: Icon(Icons.edit, color: Colors.orange[800]),
+                                    onPressed: () async {
+                                      final ImagePicker picker = ImagePicker();
+                                      final XFile? picked = await picker.pickImage(source: ImageSource.gallery, imageQuality: 70);
+                                      if (picked != null) {
+                                        final bytes = await picked.readAsBytes();
+                                        final base64Image = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+                                        setState(() {
+                                          _localIdImageBase64 = base64Image;
+                                        });
+                                      }
+                                    },
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    // ...تمت إزالة التكرار، صورة الهوية تظهر فقط مرة واحدة بعد صورة الحساب...
                     Container(
                       padding: const EdgeInsets.all(20),
                       decoration: BoxDecoration(
@@ -334,7 +379,7 @@ class _PendingPatientPageState extends State<PendingPatientPage> {
                       ),
                     ),
                     const SizedBox(height: 30),
-                    if (isRejected && (fieldsToEdit.isNotEmpty || fieldsToEdit.contains('image')))
+                    if (isRejected && (fieldsToEdit.isNotEmpty || fieldsToEdit.contains('image') || fieldsToEdit.contains('idImage')))
                       SizedBox(
                         width: double.infinity,
                         child: ElevatedButton(
@@ -346,7 +391,6 @@ class _PendingPatientPageState extends State<PendingPatientPage> {
                               return;
                             }
                             setState(() { _isUploading = true; });
-                            final dbRef = FirebaseDatabase.instance.ref();
                             final updatedData = {
                               'authUid': uid,
                               'firstName': firstNameController.text.trim(),
@@ -364,8 +408,11 @@ class _PendingPatientPageState extends State<PendingPatientPage> {
                               'fieldsToEdit': [],
                               'rejectionReason': null,
                             };
-                            await dbRef.child('pendingUsers/$uid').update(updatedData);
-                            await dbRef.child('rejectedUsers/$uid').remove();
+                            final url = Uri.parse('http://localhost:3000/pendingUsers/$uid');
+                            await http.patch(url, body: json.encode(updatedData), headers: {'Content-Type': 'application/json'});
+                            // حذف من rejectedUsers
+                            final delUrl = Uri.parse('http://localhost:3000/rejectedUsers/$uid');
+                            await http.delete(delUrl);
                             setState(() {
                               _isUploading = false;
                               _editSaved = true;

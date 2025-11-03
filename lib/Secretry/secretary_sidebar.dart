@@ -3,10 +3,11 @@ import 'dart:convert';
 import 'package:provider/provider.dart';
 import '../../providers/secretary_provider.dart';
 import '../dashboard/secretary_dashboard.dart';
-import '../Shared/patient_files.dart';
+import 'all_patients_page.dart';
 import '../Shared/waiting_list_page.dart';
 import '../Shared/add_patient_page.dart';
-import '../Secretry/account_approv.dart';
+import '../Admin/booking_settings_page.dart';
+import 'account_approv.dart';
 
 class SecretarySidebar extends StatelessWidget {
   final Color primaryColor;
@@ -127,7 +128,7 @@ class SecretarySidebar extends StatelessWidget {
                 Navigator.pop(context);
                 Navigator.push(
                   parentContext,
-                  MaterialPageRoute(builder: (context) => PatientFilesPage(userRole: userRole)),
+                  MaterialPageRoute(builder: (context) => const PatientFilesPage(userRole: 'secretary')),
                 );
               },
             ),
@@ -167,6 +168,20 @@ class SecretarySidebar extends StatelessWidget {
                   MaterialPageRoute(
                     builder: (context) =>
                         const WaitingListPage(userRole: 'secretary'),
+                  ),
+                );
+              },
+            ),
+            _buildSidebarItem(
+              context,
+              icon: Icons.calendar_today,
+              label: Localizations.localeOf(context).languageCode == 'ar' ? 'جدول الحجوزات' : 'Booking Schedule',
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                  parentContext,
+                  MaterialPageRoute(
+                    builder: (context) => const BookingSettingsPage(),
                   ),
                 );
               },

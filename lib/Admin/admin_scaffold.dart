@@ -1,7 +1,4 @@
-// ignore_for_file: use_build_context_synchronously
-
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'admin_sidebar.dart';
 import 'admin_translations.dart';
 
@@ -13,6 +10,7 @@ class AdminScaffold extends StatefulWidget {
   final VoidCallback? onLogout;
   final Color primaryColor;
   final Color accentColor;
+  final List<Map<String, dynamic>> allUsers; // إضافة هذا المتغير
 
   const AdminScaffold({
     super.key,
@@ -21,6 +19,7 @@ class AdminScaffold extends StatefulWidget {
     this.userName,
     this.userImageUrl,
     this.onLogout,
+    required this.allUsers, // جعله required
     this.primaryColor = const Color(0xFF2A7A94),
     this.accentColor = const Color(0xFF4AB8D8),
   });
@@ -33,7 +32,6 @@ class _AdminScaffoldState extends State<AdminScaffold> {
   bool isSidebarOpen = false;
 
   String _translate(BuildContext context, String key) {
-    // استخدم جدول الترجمة الموحد
     final locale = Localizations.localeOf(context).languageCode;
     return adminTranslations[key]?[locale] ?? key;
   }
@@ -74,8 +72,8 @@ class _AdminScaffoldState extends State<AdminScaffold> {
                   });
                 },
                 child: Container(
-color: Colors.black.withAlpha(77),
-                   alignment: Directionality.of(context) == TextDirection.rtl
+                  color: Colors.black.withAlpha(77),
+                  alignment: Directionality.of(context) == TextDirection.rtl
                       ? Alignment.centerRight
                       : Alignment.centerLeft,
                   child: GestureDetector(
@@ -92,14 +90,15 @@ color: Colors.black.withAlpha(77),
                               accentColor: widget.accentColor,
                               userName: widget.userName,
                               userImageUrl: widget.userImageUrl,
-                              onLogout: widget.onLogout ?? () async {
-                                await FirebaseAuth.instance.signOut();
+                              onLogout: widget.onLogout ?? () {
                                 if (mounted) {
                                   Navigator.of(context).pushReplacementNamed('/');
                                 }
                               },
                               parentContext: context,
                               translate: _translate,
+                              allUsers: widget.allUsers,
+                              userRole: 'admin', // إضافة userRole هنا
                             ),
                             Positioned(
                               top: 8,

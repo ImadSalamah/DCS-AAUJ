@@ -1,8 +1,8 @@
 // ignore_for_file: use_build_context_synchronously
 
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'package:provider/provider.dart';
 import '../../providers/language_provider.dart';
 import '../../providers/secretary_provider.dart';
@@ -21,18 +21,30 @@ class WaitingListPage extends StatefulWidget {
 }
 
 class _WaitingListPageState extends State<WaitingListPage> {
+  Future<Set<String>> _fetchAllowedFeatures() async {
+    // Replace with API call if needed
+    // Example: GET /users/{userId}/allowedFeatures
+    // For now, return default features
+    return {
+      'waiting_list',
+      'clinical_procedures_form',
+      'students_evaluation',
+      'supervision_groups',
+      'examined_patients',
+      'prescription',
+      'xray_request',
+      'assign_patients_to_students',
+    };
+  }
   final Color primaryColor = const Color(0xFF2A7A94);
-  late DatabaseReference _waitingListRef;
-  late DatabaseReference _usersRef;
+  final String apiBaseUrl = 'http://localhost:3000';
   List<Map<String, dynamic>> waitingList = [];
   bool _isLoading = true;
   bool _hasError = false;
   Timer? _nightlyCleanupTimer;
-  final FirebaseAuth _auth = FirebaseAuth.instance;
   final TextEditingController _searchController = TextEditingController();
   List<Map<String, dynamic>> _filteredWaitingList = [];
-  StreamSubscription? _waitingListSubscription;
-  StreamSubscription? _usersSubscription;
+  // No Firebase subscriptions needed
 
   String? _doctorName;
   String? _doctorImageUrl;
@@ -80,6 +92,11 @@ class _WaitingListPageState extends State<WaitingListPage> {
     'examined_patients': {'ar': 'المرضى المفحوصين', 'en': 'Examined Patients'},
     'signing_out': {'ar': 'تسجيل الخروج', 'en': 'Sign out'},
     'home': {'ar': 'الرئيسية', 'en': 'Home'},
+    'medical_record_no': {'ar': 'رقم الملف الطبي', 'en': 'Medical Record No'},
+    'patient_id': {'ar': 'رقم المريض', 'en': 'Patient ID'},
+    'appointment_date': {'ar': 'تاريخ الموعد', 'en': 'Appointment Date'},
+    'status': {'ar': 'الحالة', 'en': 'Status'},
+    'waiting': {'ar': 'في الانتظار', 'en': 'Waiting'},
   };
 
   @override
@@ -96,112 +113,82 @@ class _WaitingListPageState extends State<WaitingListPage> {
 
   @override
   void dispose() {
-    _waitingListSubscription?.cancel();
-    _usersSubscription?.cancel();
+  // No Firebase subscriptions to cancel
     _nightlyCleanupTimer?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
   void _initializeReferences() {
-    _waitingListRef = FirebaseDatabase.instance.ref('waitingList');
-    _usersRef = FirebaseDatabase.instance.ref('users');
+    // No Firebase references needed
   }
 
   void _setupRealtimeListeners() {
-    _usersSubscription = _usersRef.onValue.listen((usersSnapshot) {
-      _waitingListSubscription =
-          _waitingListRef.onValue.listen((waitingSnapshot) {
-        if (usersSnapshot.snapshot.exists && waitingSnapshot.snapshot.exists) {
-          final allUsers = _parseUsersSnapshot(usersSnapshot.snapshot);
-          setState(() {
-            waitingList =
-                _parseWaitingSnapshot(waitingSnapshot.snapshot, allUsers);
-            _filteredWaitingList = List.from(waitingList);
-            _isLoading = false;
-            _hasError = false;
-          });
-        } else {
-          setState(() {
-            waitingList = [];
-            _filteredWaitingList = [];
-            _isLoading = false;
-            _hasError = false;
-          });
-        }
-      }, onError: (error) {
-        debugPrint('Error listening to waiting list: $error');
+    // Fetch waiting list and users from API
+    _fetchWaitingListAndUsers();
+  }
+
+  Future<void> _fetchWaitingListAndUsers() async {
+    setState(() {
+      _isLoading = true;
+      _hasError = false;
+    });
+    try {
+      final waitingListRes = await http.get(Uri.parse('$apiBaseUrl/waitingList'));
+      
+      if (waitingListRes.statusCode == 200) {
+        final waitingListData = json.decode(waitingListRes.body);
+        
         setState(() {
+          waitingList = _parseWaitingApi(waitingListData);
+          _filteredWaitingList = List.from(waitingList);
+          _isLoading = false;
+          _hasError = false;
+        });
+      } else {
+        setState(() {
+          waitingList = [];
+          _filteredWaitingList = [];
           _isLoading = false;
           _hasError = true;
         });
-      });
-    }, onError: (error) {
-      debugPrint('Error listening to users: $error');
+      }
+    } catch (e) {
+      debugPrint('Error fetching waiting list/users: $e');
       setState(() {
         _isLoading = false;
         _hasError = true;
       });
-    });
+    }
   }
 
-  List<Map<String, dynamic>> _parseUsersSnapshot(DataSnapshot snapshot) {
-    if (!snapshot.exists) return [];
-    final List<Map<String, dynamic>> result = [];
-    final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-
-    data.forEach((key, value) {
-      if (value is Map<dynamic, dynamic>) {
-        final userData = Map<String, dynamic>.from(value);
-        userData['id'] = key.toString();
-        result.add(userData);
-      }
-    });
-    return result;
-  }
-
-  List<Map<String, dynamic>> _parseWaitingSnapshot(
-      DataSnapshot snapshot, List<Map<String, dynamic>> allUsers) {
-    if (!snapshot.exists) return [];
-    final List<Map<String, dynamic>> result = [];
-    final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-
-    data.forEach((key, value) {
-      if (value is Map<dynamic, dynamic>) {
-        final waitingData = Map<String, dynamic>.from(value);
-        waitingData['id'] = key.toString();
-
-        final user = allUsers.firstWhere(
-          (u) => u['id'].toString().trim() == waitingData['userId'].toString().trim(),
-          orElse: () => {},
-        );
-
-        if (user.isNotEmpty) {
-          waitingData['firstName'] = user['firstName']?.toString().trim() ?? '';
-          waitingData['fatherName'] = user['fatherName']?.toString().trim() ?? '';
-          waitingData['grandfatherName'] = user['grandfatherName']?.toString().trim() ?? '';
-          waitingData['familyName'] = user['familyName']?.toString().trim() ?? '';
-        } else if (waitingData.containsKey('firstName') && waitingData.containsKey('fatherName') && waitingData.containsKey('grandfatherName') && waitingData.containsKey('familyName')) {
-          waitingData['firstName'] = waitingData['firstName']?.toString().trim() ?? '';
-          waitingData['fatherName'] = waitingData['fatherName']?.toString().trim() ?? '';
-          waitingData['grandfatherName'] = waitingData['grandfatherName']?.toString().trim() ?? '';
-          waitingData['familyName'] = waitingData['familyName']?.toString().trim() ?? '';
-        } else {
-          final nameParts = (waitingData['name']?.toString() ?? '').split(' ');
-          waitingData['firstName'] = nameParts.isNotEmpty ? nameParts[0] : '';
-          waitingData['fatherName'] = nameParts.length > 1 ? nameParts[1] : '';
-          waitingData['grandfatherName'] = nameParts.length > 2 ? nameParts[2] : '';
-          waitingData['familyName'] = nameParts.length > 3 ? nameParts[3] : '';
-        }
-        waitingData['birthDate'] = user.isNotEmpty
-            ? user['birthDate'] ?? waitingData['birthDate'] ?? 0
-            : waitingData['birthDate'] ?? 0;
-        waitingData['gender'] = user.isNotEmpty ? user['gender']?.toString().trim() ?? '' : '';
-        waitingData['phone'] = waitingData['phone'] ?? (user.isNotEmpty ? user['phone']?.toString().trim() ?? '' : '');
-
+  List<Map<String, dynamic>> _parseWaitingApi(dynamic data) {
+    if (data == null) return [];
+    List<Map<String, dynamic>> result = [];
+    
+    if (data is List) {
+      for (var item in data) {
+        final waitingData = Map<String, dynamic>.from(item);
+        
+        // 🔥 استخدام البيانات مباشرة من جدول WAITING_LIST
+        waitingData['patientName'] = waitingData['PATIENT_NAME']?.toString().trim() ?? '';
+        waitingData['medicalRecordNo'] = waitingData['MEDICAL_RECORD_NO']?.toString().trim() ?? '';
+        waitingData['patientUid'] = waitingData['PATIENT_UID']?.toString().trim() ?? '';
+        waitingData['phone'] = waitingData['PHONE']?.toString().trim() ?? '';
+        waitingData['appointmentDate'] = waitingData['APPOINTMENT_DATE']?.toString().trim() ?? '';
+        waitingData['status'] = waitingData['STATUS']?.toString().trim() ?? 'WAITING';
+        
         result.add(waitingData);
       }
+    }
+    
+    // ترتيب القائمة حسب تاريخ الإنشاء (الأحدث أولاً)
+    result.sort((a, b) {
+      final aDate = a['CREATED_AT']?.toString() ?? '';
+      final bDate = b['CREATED_AT']?.toString() ?? '';
+      return bDate.compareTo(aDate);
     });
+    
     return result;
   }
 
@@ -209,23 +196,26 @@ class _WaitingListPageState extends State<WaitingListPage> {
     final query = _searchController.text.toLowerCase();
     setState(() {
       _filteredWaitingList = waitingList.where((patient) {
-        final fullName = _getFullName(patient).toLowerCase();
+        final fullName = _getPatientName(patient).toLowerCase();
         final phone = patient['phone']?.toString().toLowerCase() ?? '';
-        return fullName.contains(query) || phone.contains(query);
+        final medicalRecordNo = patient['medicalRecordNo']?.toString().toLowerCase() ?? '';
+        final patientId = patient['patientUid']?.toString().toLowerCase() ?? '';
+        
+        return fullName.contains(query) || 
+               phone.contains(query) ||
+               medicalRecordNo.contains(query) ||
+               patientId.contains(query);
       }).toList();
     });
   }
 
-  String _getFullName(Map<String, dynamic> user) {
-    return [
-      user['firstName'],
-      user['fatherName'],
-      user['grandfatherName'],
-      user['familyName']
-    ]
-        .where((part) => part != null && part != _translate(context, 'unknown'))
-        .join(' ')
-        .trim();
+  String _getPatientName(Map<String, dynamic> patient) {
+    // 🔥 استخدام PATIENT_NAME مباشرة من قاعدة البيانات
+    final patientName = patient['patientName']?.toString().trim() ?? 
+                       patient['PATIENT_NAME']?.toString().trim() ?? 
+                       _translate(context, 'unknown');
+    
+    return patientName;
   }
 
   String _translate(BuildContext context, String key) {
@@ -238,46 +228,39 @@ class _WaitingListPageState extends State<WaitingListPage> {
     return key;
   }
 
-  String _calculateAge(BuildContext context, dynamic birthTimestamp) {
-    final int timestamp;
-    if (birthTimestamp is String) {
-      timestamp = int.tryParse(birthTimestamp) ?? 0;
-    } else if (birthTimestamp is int) {
-      timestamp = birthTimestamp;
-    } else {
-      timestamp = 0;
-    }
-
-    if (timestamp <= 0) return _translate(context, 'age_unknown');
-
-    final birthDate = DateTime.fromMillisecondsSinceEpoch(timestamp);
-    final now = DateTime.now();
-
-    if (birthDate.isAfter(now)) return _translate(context, 'age_unknown');
-
-    final age = now.difference(birthDate);
-    final years = age.inDays ~/ 365;
-    final months = (age.inDays % 365) ~/ 30;
-    final days = (age.inDays % 365) % 30;
-
-    if (years > 0) {
-      return '$years ${_translate(context, 'years')}';
-    } else if (months > 0) {
-      return '$months ${_translate(context, 'months')}';
-    } else {
-      return '$days ${_translate(context, 'days')}';
+  String _formatAppointmentDate(String dateStr) {
+    try {
+      if (dateStr.isEmpty) return '-';
+      final date = DateTime.parse(dateStr.split('T')[0]);
+      return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    } catch (e) {
+      return dateStr;
     }
   }
 
-  Future<void> _removeFromWaitingList(String userId) async {
+  String _getStatusText(String status) {
+    switch (status.toUpperCase()) {
+      case 'WAITING':
+        return _translate(context, 'waiting');
+      default:
+        return status;
+    }
+  }
+
+  Future<void> _removeFromWaitingList(String waitingId) async {
     try {
-      await _waitingListRef.child(userId).remove();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_translate(context, 'remove_from_waiting_list')),
-          backgroundColor: Colors.orange,
-        ),
-      );
+      final res = await http.delete(Uri.parse('$apiBaseUrl/waitingList/$waitingId'));
+      if (res.statusCode == 200 || res.statusCode == 204) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(_translate(context, 'remove_from_waiting_list')),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        _fetchWaitingListAndUsers();
+      } else {
+        throw Exception('Failed to remove');
+      }
     } catch (e) {
       debugPrint('Error removing from waiting list: $e');
       ScaffoldMessenger.of(context).showSnackBar(
@@ -291,127 +274,130 @@ class _WaitingListPageState extends State<WaitingListPage> {
 
   Future<Map<String, dynamic>?> _fetchLatestExamination(String patientId) async {
     try {
-      final examinationsRef = FirebaseDatabase.instance.ref('examinations');
-      final snapshot = await examinationsRef.get();
-      if (!snapshot.exists) return null;
-      final data = snapshot.value as Map<dynamic, dynamic>?;
-      if (data == null) return null;
-      Map<String, dynamic>? latestExam;
-      int latestTimestamp = 0;
-      data.forEach((key, value) {
-        if (value is Map<dynamic, dynamic>) {
-          final exam = Map<String, dynamic>.from(value);
-          if (exam['patientId']?.toString() == patientId) {
-            final ts = exam['timestamp'] is int
-                ? exam['timestamp'] as int
-                : int.tryParse(exam['timestamp']?.toString() ?? '') ?? 0;
-            if (ts > latestTimestamp) {
-              latestTimestamp = ts;
-              latestExam = exam;
-            }
-          }
+      final res = await http.get(Uri.parse('$apiBaseUrl/patientExams?patientUid=$patientId'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data is List && data.isNotEmpty) {
+          // Assuming the API returns a list of exams sorted by timestamp desc
+          return Map<String, dynamic>.from(data.first);
         }
-      });
-      return latestExam;
+      }
+      return null;
     } catch (e) {
       debugPrint('Error fetching latest examination: $e');
       return null;
     }
   }
 
-  Future<void> _moveToInitialExamination(
-      Map<String, dynamic> patientData) async {
-    try {
-      final User? user = _auth.currentUser;
-      if (user == null) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(_translate(context, 'doctor_not_logged_in')),
-            backgroundColor: Colors.red,
-          ),
-        );
-        return;
-      }
+Future<void> _moveToInitialExamination(Map<String, dynamic> patientData) async {
+  try {
+    // الحصول على doctorId الحقيقي من LanguageProvider
+    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
+    String? doctorId = languageProvider.currentUserId;
+    
+    if (doctorId == null || doctorId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_translate(context, 'doctor_not_logged_in'))),
+      );
+      return;
+    }
 
-     String? realUserId = patientData['userId']?.toString();
+    String? patientUid = patientData['patientUid']?.toString();
+    if (patientUid == null || patientUid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('لا يوجد patientUid حقيقي للمريض!')),
+      );
+      return;
+    }
 
-      if (realUserId == null || realUserId.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('لا يوجد userId حقيقي للمريض!')),
-        );
-        return;
-      }
-      patientData['authUid'] = realUserId;
-      patientData['userId'] = realUserId;
+    // جلب بيانات المريض الكاملة من API
+    final patientRes = await http.get(Uri.parse('$apiBaseUrl/patients/$patientUid'));
+    if (patientRes.statusCode != 200) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('تعذر جلب بيانات المريض الكاملة!')),
+      );
+      return;
+    }
 
-      dynamic birthDateValue = patientData['birthDate'];
-      int birthTimestamp = 0;
-      if (birthDateValue is String) {
-        birthTimestamp = int.tryParse(birthDateValue) ?? 0;
-      } else if (birthDateValue is int) {
-        birthTimestamp = birthDateValue;
-      }
+    final fullPatientData = json.decode(patientRes.body);
+    
+    // إعداد البيانات للمريض
+    Map<String, dynamic> patientDataForExam = Map<String, dynamic>.from(fullPatientData);
+    patientDataForExam['authUid'] = patientUid;
+    patientDataForExam['userId'] = patientUid;
+    patientDataForExam['firstName'] = fullPatientData['FIRSTNAME'] ?? '';
+    patientDataForExam['familyName'] = fullPatientData['FAMILYNAME'] ?? '';
+    patientDataForExam['patientName'] = patientData['patientName'] ?? '';
+    patientDataForExam['phone'] = fullPatientData['PHONE'] ?? '';
+    patientDataForExam['birthDate'] = fullPatientData['BIRTHDATE'] ?? '';
+    patientDataForExam['medicalRecordNo'] = fullPatientData['MEDICAL_RECORD_NO'] ?? '';
 
-      final birthDate = birthTimestamp > 0
-          ? DateTime.fromMillisecondsSinceEpoch(birthTimestamp)
-          : null;
-
-      int? ageInYears;
-      if (birthDate != null) {
+    // حساب العمر
+    int? ageInYears;
+    final birthDateStr = fullPatientData['BIRTHDATE']?.toString();
+    if (birthDateStr != null && birthDateStr.isNotEmpty) {
+      try {
+        final birthDate = DateTime.parse(birthDateStr.split('T')[0]);
         final now = DateTime.now();
         ageInYears = now.year - birthDate.year;
         if (now.month < birthDate.month ||
             (now.month == birthDate.month && now.day < birthDate.day)) {
           ageInYears--;
         }
+      } catch (e) {
+        debugPrint('Error calculating age: $e');
       }
-
-      final latestExam = await _fetchLatestExamination(realUserId);
-      Map<String, dynamic> patientDataWithExam = Map<String, dynamic>.from(patientData);
-      if (latestExam != null && latestExam['examData'] != null) {
-        patientDataWithExam['examData'] = latestExam['examData'];
-      }
-
-      if (!mounted) return;
-
-      final String doctorId = user.uid;
-      final String patientIdStr = realUserId; 
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => InitialExamination(
-            patientData: patientDataWithExam,
-            age: ageInYears,
-            doctorId: doctorId,
-            patientId: patientIdStr,
-          ),
-        ),
-      );
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(_translate(context, 'next_step')),
-          backgroundColor: Colors.green,
-        ),
-      );
-    } catch (e) {
-      debugPrint('Error moving to initial examination: $e');
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content:
-              Text('${_translate(context, 'error_moving')}: ${e.toString()}'),
-          backgroundColor: Colors.red,
-        ),
-      );
     }
-  }
 
+    final latestExam = await _fetchLatestExamination(patientUid);
+    if (latestExam != null) {
+      patientDataForExam['examData'] = latestExam;
+    }
+
+    if (!mounted) return;
+
+    // 🔥 الآن نرسل doctorId الحقيقي و patientUid
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => InitialExamination(
+          patientData: patientDataForExam,
+          age: ageInYears,
+          doctorId: doctorId, // ✅ doctorId الحقيقي
+          patientId: patientUid, // ✅ patientUid الحقيقي
+          isEditMode: false,
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_translate(context, 'next_step')),
+        backgroundColor: Colors.green,
+      ),
+    );
+  } catch (e) {
+    debugPrint('Error moving to initial examination: $e');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${_translate(context, 'error_moving')}: ${e.toString()}'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+}
   Future<void> _removeAllFromWaitingList() async {
     try {
-      await _waitingListRef.remove();
+      // حذف جميع المرضى من قائمة الانتظار
+      for (var patient in waitingList) {
+        final waitingId = patient['WAITING_ID']?.toString();
+        if (waitingId != null) {
+          await http.delete(Uri.parse('$apiBaseUrl/waitingList/$waitingId'));
+        }
+      }
+      
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -419,6 +405,7 @@ class _WaitingListPageState extends State<WaitingListPage> {
           backgroundColor: Colors.green,
         ),
       );
+      _fetchWaitingListAndUsers();
     } catch (e) {
       debugPrint('Error removing all from waiting list: $e');
       if (!mounted) return;
@@ -447,12 +434,12 @@ class _WaitingListPageState extends State<WaitingListPage> {
     );
   }
 
-  Widget _buildActionButtons(Map<String, dynamic> user, BuildContext context) {
+  Widget _buildActionButtons(Map<String, dynamic> patient, BuildContext context) {
     if (widget.userRole == 'secretary') {
       return SizedBox(
         width: double.infinity,
         child: ElevatedButton(
-          onPressed: () => _removeFromWaitingList(user['id']),
+          onPressed: () => _removeFromWaitingList(patient['WAITING_ID']?.toString() ?? ''),
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.red,
             padding: const EdgeInsets.symmetric(vertical: 14),
@@ -472,7 +459,7 @@ class _WaitingListPageState extends State<WaitingListPage> {
       return SizedBox(
         width: double.infinity,
         child: ElevatedButton(
-          onPressed: () => _moveToInitialExamination(user),
+          onPressed: () => _moveToInitialExamination(patient),
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.green,
             padding: const EdgeInsets.symmetric(vertical: 14),
@@ -493,10 +480,13 @@ class _WaitingListPageState extends State<WaitingListPage> {
   }
 
   Widget _buildWaitingListCard(
-      Map<String, dynamic> user, BuildContext context) {
-    final fullName = _getFullName(user);
-    final phone = user['phone'] ?? _translate(context, 'no_number');
-    final ageText = _calculateAge(context, user['birthDate'] ?? 0);
+      Map<String, dynamic> patient, BuildContext context) {
+    final patientName = _getPatientName(patient); // 🔥 استخدام الاسم مباشرة من قاعدة البيانات
+    final phone = patient['phone'] ?? _translate(context, 'no_number');
+    final medicalRecordNo = patient['medicalRecordNo'] ?? '-';
+    final patientId = patient['patientUid'] ?? '-';
+    final appointmentDate = _formatAppointmentDate(patient['appointmentDate'] ?? '');
+    final status = _getStatusText(patient['status'] ?? 'WAITING');
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -511,14 +501,13 @@ class _WaitingListPageState extends State<WaitingListPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Header with name and status
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Expanded(
                   child: Text(
-                    fullName.isNotEmpty
-                        ? fullName
-                        : _translate(context, 'name'),
+                    patientName, // 🔥 عرض الاسم الكامل مباشرة
                     style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
@@ -527,36 +516,77 @@ class _WaitingListPageState extends State<WaitingListPage> {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                Icon(Icons.access_time, color: primaryColor),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                const Icon(Icons.phone, size: 18, color: Colors.grey),
-                const SizedBox(width: 8),
-                Text(
-                  phone,
-                  style: const TextStyle(fontSize: 16, color: Colors.black87),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    // ignore: deprecated_member_use
+                    color: primaryColor.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    status,
+                    style: TextStyle(
+                      color: primaryColor,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                  ),
                 ),
               ],
             ),
+            const SizedBox(height: 16),
+            
+            // Patient Information
+            _buildInfoRow(Icons.phone, _translate(context, 'phone'), phone),
             const SizedBox(height: 8),
-            Row(
-              children: [
-                const Icon(Icons.cake, size: 18, color: Colors.grey),
-                const SizedBox(width: 8),
-                Text(
-                  ageText,
-                  style: const TextStyle(fontSize: 16, color: Colors.black87),
-                ),
-              ],
-            ),
+            
+            _buildInfoRow(Icons.medical_services, _translate(context, 'medical_record_no'), medicalRecordNo),
+            const SizedBox(height: 8),
+            
+            _buildInfoRow(Icons.person, _translate(context, 'patient_id'), patientId),
+            const SizedBox(height: 8),
+            
+            _buildInfoRow(Icons.calendar_today, _translate(context, 'appointment_date'), appointmentDate),
+            
             const SizedBox(height: 18),
-            _buildActionButtons(user, context),
+            _buildActionButtons(patient, context),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildInfoRow(IconData icon, String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 18, color: Colors.grey),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: Colors.black87,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -627,17 +657,17 @@ class _WaitingListPageState extends State<WaitingListPage> {
   }
 
   Future<void> _loadDoctorInfo() async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    final snapshot = await FirebaseDatabase.instance.ref('users/${user.uid}').get();
-    if (snapshot.exists) {
-      final data = snapshot.value as Map<dynamic, dynamic>;
-      final firstName = data['firstName']?.toString().trim() ?? '';
-      final fatherName = data['fatherName']?.toString().trim() ?? '';
-      final grandfatherName = data['grandfatherName']?.toString().trim() ?? '';
-      final familyName = data['familyName']?.toString().trim() ?? '';
+    // Replace with your own doctorId logic (e.g., from login/session)
+    const String doctorId = 'doctor1';
+    final res = await http.get(Uri.parse('$apiBaseUrl/users/$doctorId'));
+    if (res.statusCode == 200) {
+      final data = json.decode(res.body);
+      final firstName = data['FIRST_NAME']?.toString().trim() ?? '';
+      final fatherName = data['FATHER_NAME']?.toString().trim() ?? '';
+      final grandfatherName = data['GRANDFATHER_NAME']?.toString().trim() ?? '';
+      final familyName = data['FAMILY_NAME']?.toString().trim() ?? '';
       final fullName = [firstName, fatherName, grandfatherName, familyName].where((e) => e.isNotEmpty).join(' ');
-      final imageData = data['image']?.toString() ?? '';
+      final imageData = data['IMAGE']?.toString() ?? '';
       setState(() {
         _doctorName = fullName.isNotEmpty ? fullName : null;
         _doctorImageUrl = imageData.isNotEmpty ? 'data:image/jpeg;base64,$imageData' : null;
@@ -647,15 +677,33 @@ class _WaitingListPageState extends State<WaitingListPage> {
 
   Widget? _buildSidebar(BuildContext context) {
     if (widget.userRole == 'doctor') {
-      return DoctorSidebar(
-        primaryColor: primaryColor,
-        accentColor: primaryColor,
-        userName: _doctorName ?? "دكتور",
-        userImageUrl: _doctorImageUrl,
-        parentContext: context,
-        translate: _translate,
-        onLogout: null,
-        doctorUid: FirebaseAuth.instance.currentUser?.uid ?? '',
+      return FutureBuilder<Set<String>>(
+        future: _fetchAllowedFeatures(),
+        builder: (context, snapshot) {
+          final allowed = snapshot.data ?? {
+            'waiting_list',
+            'clinical_procedures_form',
+            'students_evaluation',
+            'supervision_groups',
+            'examined_patients',
+            'prescription',
+            'xray_request',
+            'assign_patients_to_students',
+          };
+          final allowedWithHome = {'home', ...allowed};
+          return DoctorSidebar(
+            userRole: 'doctor',
+            primaryColor: primaryColor,
+            accentColor: primaryColor,
+            userName: _doctorName ?? "دكتور",
+            userImageUrl: _doctorImageUrl,
+            parentContext: context,
+            translate: _translate,
+            onLogout: null,
+            doctorUid: 'doctor1',
+            allowedFeatures: allowedWithHome.toList(),
+          );
+        },
       );
     } else if (widget.userRole == 'secretary') {
       final secretaryProvider = Provider.of<SecretaryProvider>(context);

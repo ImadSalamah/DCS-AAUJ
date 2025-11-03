@@ -1,15 +1,16 @@
+// ignore_for_file: empty_catches
+
 import 'dart:convert';
-import 'dart:io';
+import 'package:http/http.dart' as http;
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../providers/language_provider.dart' hide UserRole;
 import '../loginpage.dart' show UserRole, LoginPage;
 import 'role_guard.dart';
 import '../radiology/xray_request_list_page.dart';
 import '../radiology/radiology_sidebar.dart';
+import '../radiology/radiology_report_page.dart';
 
 class RadiologyDashboard extends StatelessWidget {
   const RadiologyDashboard({super.key});
@@ -31,174 +32,425 @@ class _RadiologyDashboardContent extends StatefulWidget {
 }
 
 class _RadiologyDashboardState extends State<_RadiologyDashboardContent> {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  late DatabaseReference _waitingListRef;
-  late DatabaseReference _xrayWaitingListRef;
-  List<Map<String, dynamic>> waitingPatients = [];
-  List<Map<String, dynamic>> xrayWaitingPatients = [];
-  bool _isLoading = true;
-  bool _hasError = false;
-  String _userName = '';
-  String _userImageUrl = '';
-  bool isSidebarOpen = false;
   final Color primaryColor = const Color(0xFF2A7A94);
   final Color accentColor = const Color(0xFF4AB8D8);
+  String _userName = '';
+  String _userImageUrl = '';
+  List<Map<String, dynamic>> waitingList = [];
+  bool _isLoading = true;
+  bool _hasError = false;
+  bool _notificationBannerShown = false;
 
-  final Map<String, Map<String, String>> localizedStrings = {
+  final Map<String, Map<String, String>> _translations = {
+    'radiology_dashboard': {
+      'ar': 'لوحة الأشعة',
+      'en': 'Radiology Dashboard'
+    },
+    'xray_requests': {'ar': 'طلبات الأشعة', 'en': 'X-Ray Requests'},
+    'xray_reports': {'ar': 'تقارير الأشعة', 'en': 'X-Ray Reports'},
+    'radiology_technician': {'ar': 'فني أشعة', 'en': 'Radiology Technician'},
+    'home': {'ar': 'الرئيسية', 'en': 'Home'},
     'app_name': {
       'ar': 'عيادات أسنان الجامعة العربية الأمريكية',
-      'en': 'Arab American University Dental Clinics',
+      'en': 'Arab American University Dental Clinics'
     },
-    'dashboard_title': {
-      'ar': 'الرئيسية',
-      'en': 'Home',
+    'error_loading_data': {
+      'ar': 'حدث خطأ في تحميل البيانات',
+      'en': 'Error loading data'
     },
-    'waiting_list': {
-      'ar': 'قائمة الانتظار',
-      'en': 'Waiting List',
+    'retry': {'ar': 'إعادة المحاولة', 'en': 'Retry'},
+    'no_internet': {
+      'ar': 'لا يوجد اتصال بالإنترنت',
+      'en': 'No internet connection'
     },
-    'change_language': {
-      'ar': 'تغيير اللغة',
-      'en': 'Change Language',
-    },
-    'logout': {
-      'ar': 'تسجيل الخروج',
-      'en': 'Logout',
-    },
-    'xray_technician': {
-      'ar': 'فني الأشعة',
-      'en': 'Radiology Technician',
-    },
-    'patient_details': {
-      'ar': 'تفاصيل المريض',
-      'en': 'Patient Details',
-    },
-    'patient_name': {
-      'ar': 'اسم المريض',
-      'en': 'Patient Name',
-    },
-    'file_number': {
-      'ar': 'رقم الملف',
-      'en': 'File Number',
-    },
-
+    'server_error': {'ar': 'خطأ في السيرفر', 'en': 'Server error'},
+    'welcome': {'ar': 'مرحباً', 'en': 'Welcome'},
   };
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
-      if (!languageProvider.isEnglish) {
-        languageProvider.toggleLanguage();
-      }
-    });
-    _waitingListRef = FirebaseDatabase.instance.ref('radiology_waiting_list');
-    _xrayWaitingListRef = FirebaseDatabase.instance.ref('xray_waiting_list');
-    _loadUserData();
-    _loadWaitingPatients();
-    _loadXrayWaitingPatients();
+    _loadRadiologyData();
+    _loadData();
+    _checkNotificationBannerShown();
   }
 
-  Future<void> _loadUserData() async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    final userRef = FirebaseDatabase.instance.ref('users/${user.uid}');
-    final snapshot = await userRef.get();
-    if (!snapshot.exists) return;
-    final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-    final firstName = data['firstName']?.toString().trim() ?? '';
-    final fatherName = data['fatherName']?.toString().trim() ?? '';
-    final grandfatherName = data['grandfatherName']?.toString().trim() ?? '';
-    final familyName = data['familyName']?.toString().trim() ?? '';
-    final fullName = [firstName, fatherName, grandfatherName, familyName].where((e) => e.isNotEmpty).join(' ');
-    final imageData = data['image']?.toString() ?? '';
+  Future<void> _checkNotificationBannerShown() async {
+    final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _userName = fullName.isNotEmpty ? fullName : 'فني الأشعة';
-      _userImageUrl = imageData.isNotEmpty ? 'data:image/jpeg;base64,$imageData' : '';
+      _notificationBannerShown = prefs.getBool('notificationBannerShown') ?? false;
     });
   }
 
-  Future<void> _loadWaitingPatients() async {
+  Future<void> _loadData() async {
+    // جلب بيانات قائمة الانتظار للأشعة
     try {
-      final snapshot = await _waitingListRef.get();
-      if (!snapshot.exists) {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('token');
+      
+      if (token != null && token.isNotEmpty) {
+        final response = await http.get(
+          Uri.parse('http://localhost:3000/radiology-waiting-list'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json',
+          },
+        );
+        
+        if (response.statusCode == 200) {
+          final List<dynamic> data = json.decode(response.body);
+          if (mounted) {
         setState(() {
-          waitingPatients = [];
-          _isLoading = false;
+              waitingList = List<Map<String, dynamic>>.from(data);
+              _hasError = false;
         });
-        return;
-      }
-      final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-      final List<Map<String, dynamic>> patients = [];
-      data.forEach((key, value) {
-        if (value is Map<dynamic, dynamic>) {
-          patients.add({
-            'id': key,
-            ...Map<String, dynamic>.from(value),
-          });
+          }
+        } else {
+          // في حالة الخطأ، نترك القائمة فارغة بدون اعتبارها خطأ
+          if (mounted) {
+            setState(() {
+              waitingList = [];
+              _hasError = false;
+            });
+          }
         }
-      });
+      } else {
+        // إذا لم يكن هناك token، نترك القائمة فارغة
+        if (mounted) {
       setState(() {
-        waitingPatients = patients;
-        _isLoading = false;
+            waitingList = [];
         _hasError = false;
       });
-    } catch (e) {
-      setState(() {
-        _hasError = true;
-        _isLoading = false;
-      });
-    }
-  }
-
-  Future<void> _loadXrayWaitingPatients() async {
-    try {
-      final snapshot = await _xrayWaitingListRef.get();
-      if (!snapshot.exists) {
-        setState(() {
-          xrayWaitingPatients = [];
-        });
-        return;
-      }
-      final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-      final List<Map<String, dynamic>> patients = [];
-      data.forEach((key, value) {
-        if (value is Map<dynamic, dynamic>) {
-          patients.add({
-            'id': key,
-            ...Map<String, dynamic>.from(value),
-          });
         }
-      });
-      setState(() {
-        xrayWaitingPatients = patients;
-      });
+      }
     } catch (e) {
+      debugPrint('Error loading waiting list: $e');
+      if (mounted) {
       setState(() {
-        _hasError = true;
-      });
+          waitingList = [];
+          _hasError = false;
+        });
+      }
     }
   }
 
-  Widget _buildUserInfoCard(BuildContext context, bool isSmallScreen, String lang, Map<String, Map<String, String>> localizedStrings) {
-    final width = MediaQuery.of(context).size.width;
-    final isWide = width > 900;
-    final isTablet = width >= 600 && width <= 900;
-    return Container(
+ Widget _buildFeatureBox(
+  BuildContext context,
+  IconData icon,
+  String title,
+  Color color, {
+  int badgeCount = 0,
+  required VoidCallback onTap,
+}) {
+  final width = MediaQuery.of(context).size.width;
+  final isSmallScreen = width < 350;
+  final isTablet = width >= 600;
+
+  return Material(
+    borderRadius: BorderRadius.circular(15),
+    elevation: 3,
+    child: InkWell(
+      borderRadius: BorderRadius.circular(15),
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(15),
+        ),
+        child: Stack(
+          children: [
+            // المحتوى الرئيسي - متمركز بالكامل
+            Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // الأيقونة
+                  Container(
+                    padding: EdgeInsets.all(isTablet ? 18 : 12),
+                    decoration: BoxDecoration(
+                      color: color.withAlpha(25),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      icon,
+                      size: isSmallScreen ? 24 : (isTablet ? 40 : 30),
+                      color: color,
+                    ),
+                  ),
+                  
+                  SizedBox(height: isTablet ? 16 : 8),
+                  
+                  // النص
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: isSmallScreen ? 14 : (isTablet ? 18 : 16),
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            // البادج (الإشعارات)
+            if (badgeCount > 0)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: const BoxDecoration(
+                    color: Colors.red,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Text(
+                    badgeCount.toString(),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+  String _translate(BuildContext context, String key) {
+    final languageProvider =
+        Provider.of<LanguageProvider>(context, listen: false);
+    final langCode = languageProvider.currentLocale.languageCode;
+    if (_translations.containsKey(key)) {
+      final translationsForKey = _translations[key]!;
+      if (translationsForKey.containsKey(langCode)) {
+        return translationsForKey[langCode]!;
+      } else if (translationsForKey.containsKey('en')) {
+        return translationsForKey['en']!;
+      } else {
+        return key;
+      }
+    } else {
+      return key;
+    }
+  }
+
+  bool _isArabic(BuildContext context) {
+    final languageProvider =
+        Provider.of<LanguageProvider>(context, listen: false);
+    return languageProvider.currentLocale.languageCode == 'ar';
+  }
+
+  String _getErrorMessage() {
+    if (_hasError) {
+      return _translate(context, 'server_error');
+    }
+    return _translate(context, 'error_loading_data');
+  }
+
+  Future<void> _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('userData');
+    await prefs.remove('token');
+    // ignore: use_build_context_synchronously
+    Navigator.pushReplacement(
+      // ignore: use_build_context_synchronously
+      context,
+      MaterialPageRoute(builder: (context) => const LoginPage()),
+    );
+  }
+
+  void showDashboardBanner(String message, {Color backgroundColor = Colors.green}) {
+    if (_notificationBannerShown) return;
+    _notificationBannerShown = true;
+    SharedPreferences.getInstance().then((prefs) {
+      prefs.setBool('notificationBannerShown', true);
+    });
+    ScaffoldMessenger.of(context).clearMaterialBanners();
+    ScaffoldMessenger.of(context).showMaterialBanner(
+      MaterialBanner(
+        content: Row(
+          children: [
+            const Icon(Icons.notifications, color: Colors.white, size: 28),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: backgroundColor,
+        elevation: 4,
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+        actions: [
+          TextButton.icon(
+            onPressed: () {
+              ScaffoldMessenger.of(context).clearMaterialBanners();
+            },
+            icon: const Icon(Icons.close, color: Colors.white, size: 20),
+            label: const Text('إغلاق', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            style: TextButton.styleFrom(
+              backgroundColor: Colors.red.shade700,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            ),
+          ),
+        ],
+      ),
+    );
+    Future.delayed(const Duration(seconds: 4), () {
+      if (mounted) {
+        ScaffoldMessenger.of(context).clearMaterialBanners();
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final languageProvider = Provider.of<LanguageProvider>(context);
+    final mediaQuery = MediaQuery.of(context);
+    final isSmallScreen = mediaQuery.size.width < 350;
+    final isLargeScreen = mediaQuery.size.width >= 800;
+
+    return Directionality(
+      textDirection: _isArabic(context) ? TextDirection.rtl : TextDirection.ltr,
+      // ignore: deprecated_member_use
+      child: WillPopScope(
+        onWillPop: () async {
+          ScaffoldMessenger.of(context).clearMaterialBanners();
+          return true;
+        },
+        child: Scaffold(
+          appBar: AppBar(
+            backgroundColor: primaryColor,
+            title: Text(
+              _translate(context, 'app_name'),
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: isSmallScreen ? 16 : (isLargeScreen ? 24 : 18),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            centerTitle: true,
+            leading: Builder(
+              builder: (context) => IconButton(
+                icon: const Icon(Icons.menu, color: Colors.white),
+                onPressed: () {
+                  Scaffold.of(context).openDrawer();
+                },
+              ),
+            ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.language, color: Colors.white),
+                onPressed: () => languageProvider.toggleLanguage(),
+              ),
+              IconButton(
+                onPressed: _logout,
+                icon: const Icon(Icons.logout, color: Colors.white),
+              ),
+            ],
+          ),
+          drawer: RadiologySidebar(
+            primaryColor: primaryColor,
+            accentColor: accentColor,
+            userName: _userName.isNotEmpty ? _userName : _translate(context, 'radiology_technician'),
+            userImageUrl: _userImageUrl,
+            collapsed: false,
+            parentContext: context,
+            lang: languageProvider.currentLocale.languageCode,
+            localizedStrings: _translations,
+            onClose: () {},
+            onHome: () {},
+            onWaitingList: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const XrayRequestListPage()),
+              );
+            },
+          ),
+          body: _buildBody(context, isLargeScreen: isLargeScreen),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context, {bool isLargeScreen = false}) {
+    if (_isLoading) {
+      return const Center(
+        child: CircularProgressIndicator(),
+      );
+    }
+
+    if (_hasError) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 50, color: Colors.red),
+            const SizedBox(height: 20),
+            Text(
+              _getErrorMessage(),
+              style: const TextStyle(fontSize: 18),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _loadRadiologyData,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: primaryColor,
+              ),
+              child: Text(
+                _translate(context, 'retry'),
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Stack(
+      children: [
+        Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+          ),
+        ),
+        SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).padding.bottom + 80,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
       margin: const EdgeInsets.all(20),
-      width: double.infinity, 
-      height: isSmallScreen
-          ? 180
-          : (isWide ? 240 : (isTablet ? 220 : 200)), 
-      decoration: BoxDecoration(
-        image: const DecorationImage(
+                  height: MediaQuery.of(context).size.width < 600 ? 180 : 200,
+                  decoration: const BoxDecoration(
+                    image: DecorationImage(
           image: AssetImage('lib/assets/backgrownd.png'),
           fit: BoxFit.cover,
         ),
-        color: const Color(0x4D000000),
-        borderRadius: BorderRadius.circular(15),
-        boxShadow: const [
+                    color: Color(0x4D000000),
+                    borderRadius: BorderRadius.all(Radius.circular(15)),
+                    boxShadow: [
           BoxShadow(
             color: Colors.black12,
             blurRadius: 10,
@@ -220,46 +472,34 @@ class _RadiologyDashboardState extends State<_RadiologyDashboardContent> {
               children: [
                 _userImageUrl.isNotEmpty
                     ? CircleAvatar(
-                        radius: isSmallScreen
-                            ? 30
-                            : (isWide ? 55 : (isTablet ? 45 : 40)),
+                                    radius: MediaQuery.of(context).size.width < 600 ? 30 : 40,
                         backgroundColor: Colors.white.withAlpha(204), 
-
-                        child: ClipOval(
-                          child: Image.memory(
-                            base64Decode(_userImageUrl.replaceFirst('data:image/jpeg;base64,', '')),
-                            width: isSmallScreen
-                                ? 60
-                                : (isWide ? 110 : (isTablet ? 90 : 80)),
-                            height: isSmallScreen
-                                ? 60
-                                : (isWide ? 110 : (isTablet ? 90 : 80)),
-                            fit: BoxFit.cover,
-                          ),
+                                    backgroundImage: NetworkImage(_userImageUrl),
+                                    onBackgroundImageError: (exception, stackTrace) {
+                                      // سيتم عرض الأيقونة الافتراضية تلقائياً إذا فشل تحميل الصورة
+                                    },
+                                    child: _userImageUrl.isNotEmpty ? null : Icon(
+                                      Icons.person,
+                                      size: MediaQuery.of(context).size.width < 600 ? 30 : 40,
+                                      color: accentColor,
                         ),
                       )
                     : CircleAvatar(
-                        radius: isSmallScreen
-                            ? 30
-                            : (isWide ? 55 : (isTablet ? 45 : 40)),
+                                    radius: MediaQuery.of(context).size.width < 600 ? 30 : 40,
                        backgroundColor: Colors.white.withAlpha(204),
                         child: Icon(
                           Icons.person,
-                          size: isSmallScreen
-                              ? 30
-                              : (isWide ? 55 : (isTablet ? 45 : 40)),
+                                      size: MediaQuery.of(context).size.width < 600 ? 30 : 40,
                           color: accentColor,
                         ),
                       ),
-                SizedBox(height: isWide ? 30 : (isTablet ? 25 : 15)),
+                            const SizedBox(height: 15),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8),
                   child: Text(
                     _userName,
                     style: TextStyle(
-                      fontSize: isSmallScreen
-                          ? 16
-                          : (isWide ? 28 : (isTablet ? 22 : 20)),
+                                  fontSize: MediaQuery.of(context).size.width < 600 ? 16 : 20,
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
                     ),
@@ -268,132 +508,59 @@ class _RadiologyDashboardState extends State<_RadiologyDashboardContent> {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                SizedBox(height: isWide ? 10 : 5),
+                            const SizedBox(height: 5),
                 Text(
-                  localizedStrings['xray_technician']?[lang] ?? '',
+                              _translate(context, 'radiology_technician'),
                   style: TextStyle(
-                    fontSize: isSmallScreen ? 14 : (isWide ? 20 : (isTablet ? 18 : 16)),
+                                fontSize: MediaQuery.of(context).size.width < 600 ? 14 : 16,
                     color: Colors.white,
                   ),
-                  textAlign: TextAlign.center,
                 ),
               ],
             ),
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildFeatureBox(
-    BuildContext context,
-    IconData icon,
-    String title,
-    Color color,
-    VoidCallback onTap,
-  ) {
-    final width = MediaQuery.of(context).size.width;
-    final isSmallScreen = width < 350;
-    final isTablet = width >= 600 && width <= 900;
-    final isWide = width > 900;
-
-    return Material(
-      borderRadius: BorderRadius.circular(15),
-      elevation: 3,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(15),
-        onTap: onTap,
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(15),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                padding: EdgeInsets.all(isTablet ? 18 : 12),
-                decoration: BoxDecoration(
-                  color: color.withAlpha(25), 
-
-                  shape: BoxShape.circle,
                 ),
-                child: Icon(
-                  icon,
-                  size: isSmallScreen
-                      ? 24
-                      : (isWide ? 40 : (isTablet ? 40 : 30)),
-                  color: color,
-                ),
-              ),
-              SizedBox(height: isWide ? 16 : (isTablet ? 16 : 8)),
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: isSmallScreen
-                        ? 14
-                        : (isWide ? 18 : (isTablet ? 18 : 16)),
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMainFeatures(BuildContext context, String lang, Map<String, Map<String, String>> localizedStrings) {
-    final mediaQuery = MediaQuery.of(context);
-    final width = mediaQuery.size.width;
+                  padding: const EdgeInsets.all(20),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final width = constraints.maxWidth;
     final isWide = width > 900;
     final isTablet = width >= 600 && width <= 900;
+                      final crossAxisCount = isWide ? 4 : (isTablet ? 3 : 2);
     final gridChildAspectRatio = isWide ? 1.1 : (isTablet ? 1.2 : 1.1);
-
     final features = [
       {
         'icon': Icons.list_alt,
-        'title': localizedStrings['waiting_list']?[lang] ?? '',
+                          'title': _translate(context, 'xray_requests'),
         'color': primaryColor,
+                          'badgeCount': waitingList.length,
         'onTap': () {
           Navigator.push(
             context,
             MaterialPageRoute(
-              builder: (_) => const XrayRequestListPage(),
+                                builder: (context) => const XrayRequestListPage(),
+                              ),
+                            );
+                          }
+                        },
+                        {
+                          'icon': Icons.assignment,
+                          'title': _translate(context, 'xray_reports'),
+                          'color': Colors.green,
+                          'onTap': () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => const RadiologyReportPage(),
             ),
           );
         }
       },
     ];
-
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          LayoutBuilder(
-            builder: (context, constraints) {
-              double maxWidth = MediaQuery.of(context).size.width;
-              if (maxWidth > 600) {
-                maxWidth = 400;
-              } else if (maxWidth > 400) {
-                maxWidth = 340;
-              } else {
-                maxWidth = maxWidth - 40; 
-              }
-              int crossAxisCount = features.length > 1 ? 2 : 1;
-              return ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: maxWidth,
-                ),
-                child: GridView.builder(
+                      return GridView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
                   itemCount: features.length,
@@ -410,419 +577,80 @@ class _RadiologyDashboardState extends State<_RadiologyDashboardContent> {
                       feature['icon'] as IconData,
                       feature['title'] as String,
                       feature['color'] as Color,
-                      feature['onTap'] as VoidCallback,
-                    );
-                  },
-                ),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showPatientDialog(Map<String, dynamic> patient, String lang, Map<String, Map<String, String>> localizedStrings) async {
-    String selectedTooth = '';
-    File? xrayImage;
-    showDialog(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setState) {
-            return AlertDialog(
-              title: Text(localizedStrings['patient_details']?[lang] ?? ''),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('${localizedStrings['patient_name']?[lang] ?? ''}: ${patient['name'] ?? ''}'),
-                    const SizedBox(height: 10),
-                    DropdownButtonFormField<String>(
-                      value: selectedTooth.isNotEmpty ? selectedTooth : null,
-                      items: List.generate(32, (i) => (i+1).toString())
-                          .map((tooth) => DropdownMenuItem(
-                                value: tooth,
-                                child: Text('السن رقم $tooth'),
-                              ))
-                          .toList(),
-                      onChanged: (val) {
-                        setState(() {
-                          selectedTooth = val ?? '';
-                        });
-                      },
-                      decoration: const InputDecoration(
-                        labelText: 'اختر السن المطلوب تصويره',
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    xrayImage != null
-                        ? Image.file(xrayImage!, height: 100)
-                        : const Text('لم يتم اختيار صورة'),
-                    ElevatedButton(
-                      onPressed: () async {
-                        final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
-                        if (picked != null) {
-                          setState(() {
-                            xrayImage = File(picked.path);
-                          });
-                        }
-                      },
-                      child: const Text('رفع صورة الأشعة'),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('إغلاق'),
-                ),
-                ElevatedButton(
-                  onPressed: selectedTooth.isNotEmpty && xrayImage != null
-                      ? () async {
-                          final bytes = await xrayImage!.readAsBytes();
-                          final base64Image = base64Encode(bytes);
-                          await _waitingListRef.child(patient['id']).update({
-                            'xrayImage': base64Image,
-                            'tooth': selectedTooth,
-                            'status': 'done',
-                          });
-                          // ignore: use_build_context_synchronously
-                          Navigator.pop(context);
-                          _loadWaitingPatients();
-                        }
-                      : null,
-                  child: const Text('حفظ'),
-                ),
-              ],
-            );
-          },
-        );
-      },
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final languageProvider = Provider.of<LanguageProvider>(context);
-    final lang = languageProvider.currentLocale.languageCode;
-    final mediaQuery = MediaQuery.of(context);
-    final isSmallScreen = mediaQuery.size.width < 350;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isWide = constraints.maxWidth > 700;
-        final user = _auth.currentUser;
-        if (user != null) {
-          return FutureBuilder<DataSnapshot>(
-            future: FirebaseDatabase.instance.ref('users/${user.uid}').get(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snapshot.hasData && snapshot.data != null) {
-                final data = snapshot.data!.value as Map<dynamic, dynamic>?;
-                final isActive = data != null && (data['isActive'] == true || data['isActive'] == 1);
-                if (!isActive) {
-                  return const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(32.0),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.block, color: Colors.red, size: 60),
-                          SizedBox(height: 24),
-                          Text(
-                            'يرجى مراجعة إدارة عيادات الأسنان في الجامعة لتفعيل حسابك.',
-                            style: TextStyle(fontSize: 20, color: Colors.red, fontWeight: FontWeight.bold),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                }
-              }
-              return Directionality(
-                textDirection: languageProvider.currentLocale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
-                child: Scaffold(
-                  backgroundColor: Colors.white,
-                  appBar: AppBar(
-                    title: Text(localizedStrings['app_name']?[lang] ?? ''),
-                    backgroundColor: primaryColor,
-                    foregroundColor: Colors.white,
-                    leading: IconButton(
-                      icon: const Icon(Icons.menu),
-                      onPressed: () {
-                        setState(() {
-                          isSidebarOpen = !isSidebarOpen;
-                        });
-                      },
-                    ),
-                    actions: [
-                      IconButton(
-                        icon: const Icon(Icons.language, color: Colors.white),
-                        onPressed: () {
-                          languageProvider.toggleLanguage();
-                        },
-                        tooltip: localizedStrings['change_language']?[lang] ?? '',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.logout, color: Colors.white),
-                        onPressed: () async {
-                          await _auth.signOut();
-                          if (!mounted) return;
-                          Navigator.pushReplacement(
-                            // ignore: use_build_context_synchronously
-                            context,
-                            MaterialPageRoute(builder: (context) => const LoginPage()),
+                            onTap: feature['onTap'] as VoidCallback,
+                            badgeCount: (feature['badgeCount'] as int?) ?? 0,
                           );
                         },
-                      ),
-                    ],
-                  ),
-                  body: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: _isLoading
-                            ? const Center(child: CircularProgressIndicator())
-                            : _hasError
-                                ? const Center(child: Text('حدث خطأ أثناء تحميل البيانات'))
-                                : Center(
-                                    child: SingleChildScrollView(
-                                      child: Padding(
-                                        padding: EdgeInsets.symmetric(
-                                          horizontal: isWide ? 0 : 0,
-                                          vertical: 20,
-                                        ),
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                                          children: [
-                                            _buildUserInfoCard(context, isSmallScreen, lang, localizedStrings),
-                                            _buildMainFeatures(context, lang, localizedStrings),
-                                            ListView.builder(
-                                              shrinkWrap: true,
-                                              physics: const NeverScrollableScrollPhysics(),
-                                              itemCount: waitingPatients.length,
-                                              itemBuilder: (context, index) {
-                                                final patient = waitingPatients[index];
-                                                return Card(
-                                                  margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 20),
-                                                  child: ListTile(
-                                                    title: Text(patient['name'] ?? (localizedStrings['patient_name']?[lang] ?? '')),
-                                                    subtitle: Text('${localizedStrings['file_number']?[lang] ?? ''}: ${patient['fileNumber'] ?? ''}'),
-                                                    trailing: const Icon(Icons.arrow_forward_ios),
-                                                    onTap: () => _showPatientDialog(patient, lang, localizedStrings),
-                                                  ),
                                                 );
                                               },
                                             ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                      ),
-                      if (isSidebarOpen) ...[
-                        Positioned.fill(
-                          child: GestureDetector(
-                            onTap: () {
-                              setState(() {
-                                isSidebarOpen = false;
-                              });
-                            },
-                            child: Container(
-                              color: Colors.black.withAlpha(25),
-                            ),
-                          ),
-                        ),
-                        Positioned(
-                          top: 0,
-                          bottom: 0,
-                          right: lang == 'ar' ? 0 : null,
-                          left: lang == 'ar' ? null : 0,
-                          child: RadiologySidebar(
-                            onClose: () {
-                              setState(() {
-                                isSidebarOpen = false;
-                              });
-                            },
-                            onHome: () {
-                              setState(() {
-                                isSidebarOpen = false;
-                              });
-                              Navigator.pushReplacement(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => const RadiologyDashboard(),
-                                ),
-                              );
-                            },
-                            onWaitingList: () {
-                              setState(() {
-                                isSidebarOpen = false;
-                              });
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => const XrayRequestListPage(),
-                                ),
-                              );
-                            },
-                            primaryColor: primaryColor,
-                            accentColor: accentColor,
-                            userName: _userName,
-                            userImageUrl: _userImageUrl,
-                            collapsed: false,
-                            parentContext: context,
-                            lang: lang,
-                            localizedStrings: localizedStrings,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
                 ),
-              );
-            },
-          );
-        }
-        return Directionality(
-          textDirection: languageProvider.currentLocale.languageCode == 'ar' ? TextDirection.rtl : TextDirection.ltr,
-          child: Scaffold(
-            backgroundColor: Colors.white,
-            appBar: AppBar(
-              title: Text(localizedStrings['app_name']?[lang] ?? ''),
-              backgroundColor: primaryColor,
-              foregroundColor: Colors.white,
-              leading: IconButton(
-                icon: const Icon(Icons.menu),
-                onPressed: () {
-                  setState(() {
-                    isSidebarOpen = !isSidebarOpen;
-                  });
-                },
-              ),
-              actions: [
-                IconButton(
-                  icon: const Icon(Icons.language, color: Colors.white),
-                  onPressed: () {
-                    languageProvider.toggleLanguage();
-                  },
-                  tooltip: localizedStrings['change_language']?[lang] ?? '',
-                ),
-                IconButton(
-                  icon: const Icon(Icons.logout, color: Colors.white),
-                  onPressed: () async {
-                    await _auth.signOut();
-                    if (!mounted) return;
-                    Navigator.pushReplacement(
-                      // ignore: use_build_context_synchronously
-                      context,
-                      MaterialPageRoute(builder: (context) => const LoginPage()),
-                    );
-                  },
-                ),
-              ],
-            ),
-            body: Stack(
-              children: [
-                Positioned.fill(
-                  child: _isLoading
-                      ? const Center(child: CircularProgressIndicator())
-                      : _hasError
-                          ? const Center(child: Text('حدث خطأ أثناء تحميل البيانات'))
-                          : Center(
-                              child: SingleChildScrollView(
-                                child: Padding(
-                                  padding: EdgeInsets.symmetric(
-                                    horizontal: isWide ? 0 : 0,
-                                    vertical: 20,
-                                  ),
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                                    children: [
-                                      _buildUserInfoCard(context, isSmallScreen, lang, localizedStrings),
-                                      _buildMainFeatures(context, lang, localizedStrings),
-                                      ListView.builder(
-                                        shrinkWrap: true,
-                                        physics: const NeverScrollableScrollPhysics(),
-                                        itemCount: waitingPatients.length,
-                                        itemBuilder: (context, index) {
-                                          final patient = waitingPatients[index];
-                                          return Card(
-                                            margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 20),
-                                            child: ListTile(
-                                              title: Text(patient['name'] ?? (localizedStrings['patient_name']?[lang] ?? '')),
-                                              subtitle: Text('${localizedStrings['file_number']?[lang] ?? ''}: ${patient['fileNumber'] ?? ''}'),
-                                              trailing: const Icon(Icons.arrow_forward_ios),
-                                              onTap: () => _showPatientDialog(patient, lang, localizedStrings),
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                ),
-                if (isSidebarOpen) ...[
-                  Positioned.fill(
-                    child: GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          isSidebarOpen = false;
-                        });
-                      },
-                      child: Container(
-                       color: Colors.black.withAlpha(25),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    top: 0,
-                    bottom: 0,
-                    right: lang == 'ar' ? 0 : null,
-                    left: lang == 'ar' ? null : 0,
-                    child: RadiologySidebar(
-                      onClose: () {
-                        setState(() {
-                          isSidebarOpen = false;
-                        });
-                      },
-                      onHome: () {
-                        setState(() {
-                          isSidebarOpen = false;
-                        });
-                      },
-                      onWaitingList: () {
-                        setState(() {
-                          isSidebarOpen = false;
-                        });
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => const XrayRequestListPage(),
-                          ),
-                        );
-                      },
-                      primaryColor: primaryColor,
-                      accentColor: accentColor,
-                      userName: _userName,
-                      userImageUrl: _userImageUrl,
-                      collapsed: false,
-                      parentContext: context,
-                      lang: lang,
-                      localizedStrings: localizedStrings,
-                    ),
-                  ),
-                ],
               ],
             ),
           ),
-        );
-      },
+        ),
+      ],
     );
+  }
+
+  Future<void> _loadRadiologyData() async {
+                        setState(() {
+      _isLoading = true;
+      _hasError = false;
+                        });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userDataJson = prefs.getString('userData');
+      if (userDataJson == null) {
+        if (!mounted) return;
+                        setState(() {
+          _userName = _translate(context, 'radiology_technician');
+          _userImageUrl = '';
+          _isLoading = false;
+        });
+        return;
+      }
+      final userData = json.decode(userDataJson);
+      
+      // استخدام نفس منطق الكود الثاني
+      final fullName = (userData['FULL_NAME'] ?? '').toString().trim();
+      String name = fullName;
+      
+      if (name.isEmpty) {
+        final firstName = userData['FIRST_NAME']?.toString().trim() ?? '';
+        final fatherName = userData['FATHER_NAME']?.toString().trim() ?? '';
+        final grandfatherName = userData['GRANDFATHER_NAME']?.toString().trim() ?? '';
+        final familyName = userData['FAMILY_NAME']?.toString().trim() ?? '';
+        
+        name = [
+          if (firstName.isNotEmpty) firstName,
+          if (fatherName.isNotEmpty) fatherName,
+          if (grandfatherName.isNotEmpty) grandfatherName,
+          if (familyName.isNotEmpty) familyName,
+        ].join(' ');
+      }
+
+      final imageData = userData['IMAGE']?.toString().trim() ?? '';
+      String imageUrl = '';
+      if (imageData.isNotEmpty && (imageData.startsWith('http://') || imageData.startsWith('https://'))) {
+        imageUrl = imageData;
+      }
+
+      if (!mounted) return;
+                        setState(() {
+        _userName = name.isNotEmpty ? name : _translate(context, 'radiology_technician');
+        _userImageUrl = imageUrl;
+        _isLoading = false;
+        _hasError = false;
+                        });
+      
+    } catch (e) {
+      debugPrint('Error loading radiology data: $e');
+      if (!mounted) return;
+                        setState(() {
+        _hasError = true;
+        _isLoading = false;
+                        });
+    }
   }
 }

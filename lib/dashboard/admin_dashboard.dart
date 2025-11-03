@@ -2,19 +2,22 @@
 
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'doctors_management_page.dart';
 import 'package:provider/provider.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../providers/language_provider.dart' hide UserRole;
 import '../loginpage.dart' show UserRole, LoginPage;
 import 'role_guard.dart';
 import '../Admin/add_user_page.dart';
 import '../Admin/edit_user_page.dart';
 import '../Admin/add_student.dart';
-import '../Admin/manage_study_groups_page.dart';
 import '../Admin/admin_sidebar.dart';
-import '../notifications_page.dart';
 import '../Admin/assign_patients_admin_page.dart';
+import '../Admin/booking_settings_page.dart';
+// ✅ استيراد الصفحة الجديدة للإدمن
+import '../Admin/examined_patients_page.dart';
 
 class AdminDashboard extends StatelessWidget {
   const AdminDashboard({super.key});
@@ -39,9 +42,9 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
   final Color primaryColor = const Color(0xFF2A7A94);
   final Color accentColor = const Color(0xFF4AB8D8);
   final Color webSidebarColor = const Color(0xFFF5F5F5);
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  late DatabaseReference _usersRef;
-  late DatabaseReference _adminRef;
+  
+  // قاعدة البيانات الجديدة - Oracle API
+  final String _apiBaseUrl = 'http://localhost:3000'; // تغيير هذا إلى عنوان خادم Oracle الخاص بك
 
   String _userName = '';
   String _userImageUrl = '';
@@ -52,6 +55,8 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
   bool hasNewNotification = false;
 
   final Map<String, Map<String, String>> _translations = {
+  'manage_doctors': {'ar': 'إدارة الأطباء', 'en': 'Manage Doctors'},
+  'booking_table': {'ar': 'جدول الحجوزات', 'en': 'Booking Table'},
     'admin_dashboard': {'ar': 'لوحة الإدارة', 'en': 'Admin Dashboard'},
     'manage_users': {'ar': 'إدارة المستخدمين', 'en': 'Manage Users'},
     'add_user': {'ar': 'إضافة مستخدم', 'en': 'Add User'},
@@ -60,6 +65,9 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
     'admin': {'ar': 'مدير النظام', 'en': 'System Admin'},
     'home': {'ar': 'الرئيسية', 'en': 'Home'},
     'settings': {'ar': 'الإعدادات', 'en': 'Settings'},
+    // ✅ الترجمات الجديدة
+    'examined_patients': {'ar': 'المرضى المفحوصين', 'en': 'Examined Patients'},
+    'all_patients_reports': {'ar': 'تقارير جميع المرضى', 'en': 'All Patients Reports'},
     'app_name': {
       'ar': 'عيادات أسنان الجامعة العربية الأمريكية',
       'en': 'Arab American University Dental Clinics'
@@ -89,28 +97,187 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
     },
   };
 
+  // ✅ دالة مساعدة للحصول على ID المستخدم الحالي
+  String? _getCurrentUserId() {
+    try {
+      // حاول الحصول من allUsers إذا كان محمل
+      if (allUsers.isNotEmpty && _userName.isNotEmpty) {
+        final currentUser = allUsers.firstWhere(
+          (user) => 
+            (user['FULL_NAME']?.toString().trim() == _userName) ||
+            (user['name']?.toString().trim() == _userName),
+          orElse: () => {},
+        );
+        
+        if (currentUser.isNotEmpty) {
+          return currentUser['USER_UID']?.toString() ?? 
+                 currentUser['uid']?.toString() ??
+                 currentUser['USER_ID']?.toString();
+        }
+      }
+      
+      // أو حاول من SharedPreferences
+      return null; // يمكنك تعديل هذا حسب نظامك
+    } catch (e) {
+      debugPrint('Error getting current user ID: $e');
+      return null;
+    }
+  }
+
+  // تعريف قائمة الفيتشرات كمتغير في الكلاس
+  List<Map<String, dynamic>> getFeaturesList(BuildContext context) {
+    return [
+      {
+        'icon': Icons.people,
+        'title': _translate(context, 'manage_users'),
+        'color': Colors.blue,
+        'onTap': () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => EditUserPage(
+                user: allUsers.isNotEmpty ? allUsers.first : {},
+                usersList: allUsers,
+                userName: _userName,
+                userImageUrl: _userImageUrl,
+                translate: _translate,
+                onLogout: _logout,
+              ),
+            ),
+          );
+        },
+      },
+      {
+        'icon': Icons.person_add,
+        'title': _translate(context, 'add_user'),
+        'color': Colors.green,
+        'onTap': () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => AddUserPage(
+                userName: _userName,
+                userImageUrl: _userImageUrl,
+                translate: _translate,
+                onLogout: _logout,
+                allUsers: allUsers, // إضافة هذا
+              ),
+            ),
+          );
+        },
+      },
+      {
+        'icon': Icons.person_add,
+        'title': _translate(context, 'add_user_student'),
+        'color': Colors.green,
+        'onTap': () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => AddDentalStudentPage(
+                userName: _userName,
+                userImageUrl: _userImageUrl,
+                translate: _translate,
+                onLogout: _logout,
+                allUsers: allUsers, // إضافة هذا
+              ),
+            ),
+          );
+        },
+      },
+      {
+        'icon': Icons.assignment_ind,
+        'title': _isArabic(context) ? 'تعيين المرضى للطلاب' : 'Assign Patients to Students',
+        'color': Colors.deepPurple,
+        'onTap': () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const AssignPatientsAdminPage(),
+            ),
+          );
+        },
+      },
+      {
+        'icon': Icons.medical_services,
+        'title': _translate(context, 'manage_doctors'),
+        'color': Colors.teal,
+        'onTap': () {
+          final doctors = allUsers.where((user) =>
+            (user['role'] == 'doctor' || user['ROLE'] == 'doctor')
+          ).map((e) => Map<String, dynamic>.from(e)).toList();
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => DoctorsManagementPage(
+                doctors: doctors,
+                userName: _userName,
+                userImageUrl: _userImageUrl,
+                translate: _translate,
+                onLogout: _logout,
+                allUsers: allUsers,
+              ),
+            ),
+          );
+        },
+      },
+      {
+        'icon': Icons.table_chart,
+        'title': _translate(context, 'booking_table'),
+        'color': Colors.orange,
+        'onTap': () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const BookingSettingsPage(),
+            ),
+          );
+        },
+      },
+      {
+        'icon': Icons.check_circle,
+        'title': _translate(context, 'examined_patients'), // ✅ استخدام الترجمة
+        'color': Colors.teal,
+        'onTap': () {
+          final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
+          
+          // ✅ تأكد أن اللغة إنجليزية للتوافق مع الصفحة الجديدة
+          if (!languageProvider.isEnglish) {
+            languageProvider.setLocale(const Locale('en'));
+          }
+          
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => AdminExaminedPatientsPage(
+                adminName: _userName,
+                adminImageUrl: _userImageUrl,
+                currentUserId: _getCurrentUserId(),
+                userAllowedFeatures: ['all_reports', 'all_patients', 'all_users'],
+              ),
+            ),
+          );
+        },
+      },
+    ];
+  }
+
   @override
   void initState() {
     super.initState();
-    _initializeReferences();
     _loadAdminData();
     _loadAllUsers();
     _listenForNotifications();
   }
 
-  void _initializeReferences() {
-    _usersRef = FirebaseDatabase.instance.ref('users');
-    final user = _auth.currentUser;
-    if (user != null) {
-      _adminRef = FirebaseDatabase.instance.ref('users/${user.uid}');
-    }
-  }
-
   Future<void> _loadAdminData() async {
     try {
-      final user = _auth.currentUser;
-      if (user == null) {
-        if (!mounted) return;
+      // الحصول على بيانات المستخدم من SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      final userDataJson = prefs.getString('userData');
+
+      if (userDataJson == null) {
+      if (!mounted) return;
         setState(() {
           _userName = _translate(context, 'admin');
           _isLoading = false;
@@ -118,19 +285,10 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
         return;
       }
 
-      final snapshot = await _adminRef.get();
+  final userData = json.decode(userDataJson);
+  debugPrint('ADMIN DASHBOARD userData: $userData');
       if (!mounted) return;
-      if (!snapshot.exists) {
-        setState(() {
-          _userName = _translate(context, 'admin');
-          _isLoading = false;
-        });
-        return;
-      }
-
-      final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-      if (!mounted) return;
-      _updateUserData(data);
+  _updateUserData(userData);
     } catch (e) {
       debugPrint('Error loading admin data: $e');
       if (!mounted) return;
@@ -143,34 +301,23 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
 
   Future<void> _loadAllUsers() async {
     try {
-      final snapshot = await _usersRef.get();
-      if (!snapshot.exists) {
-        if (!mounted) return;
-        setState(() {
-          allUsers = [];
-          _isLoading = false;
-        });
-        return;
-      }
+      final response = await http.get(
+        Uri.parse('$_apiBaseUrl/users'),
+        headers: {'Content-Type': 'application/json'},
+      );
 
-      final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-      final List<Map<String, dynamic>> users = [];
-
-      data.forEach((key, value) {
-        if (value is Map<dynamic, dynamic>) {
-          users.add({
-            'uid': key,
-            ...Map<String, dynamic>.from(value),
-          });
-        }
-      });
+      if (response.statusCode == 200) {
+        final List<dynamic> users = json.decode(response.body);
 
       if (!mounted) return;
       setState(() {
-        allUsers = users;
+          allUsers = users.map((user) => Map<String, dynamic>.from(user)).toList();
         _isLoading = false;
         _hasError = false;
       });
+      } else {
+        throw Exception('Failed to load users: ${response.statusCode}');
+      }
     } catch (e) {
       debugPrint('Error loading users: $e');
       if (!mounted) return;
@@ -181,44 +328,42 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
     }
   }
 
-  void _updateUserData(Map<dynamic, dynamic> data) {
-    final firstName = data['firstName']?.toString().trim() ?? '';
-    final fatherName = data['fatherName']?.toString().trim() ?? '';
-    final grandfatherName = data['grandfatherName']?.toString().trim() ?? '';
-    final familyName = data['familyName']?.toString().trim() ?? '';
-
-    final fullName = [
-      if (firstName.isNotEmpty) firstName,
-      if (fatherName.isNotEmpty) fatherName,
-      if (grandfatherName.isNotEmpty) grandfatherName,
-      if (familyName.isNotEmpty) familyName,
-    ].join(' ');
-
-    final imageData = data['image']?.toString() ?? '';
-
+  void _updateUserData(Map<String, dynamic> data) {
+    final fullName = (data['FULL_NAME'] ?? '').toString().trim();
+    String imageData = (data['IMAGE'] ?? '').toString().trim();
+    // إذا لم تكن الصورة موجودة في SharedPreferences، ابحث عنها في allUsers
+    if (imageData.isEmpty && data['USER_ID'] != null && allUsers.isNotEmpty) {
+      final userFromList = allUsers.firstWhere(
+        (u) => (u['USER_ID']?.toString() ?? u['uid']?.toString() ?? '') == data['USER_ID'].toString(),
+        orElse: () => {},
+      );
+      if (userFromList.isNotEmpty && userFromList['IMAGE'] != null) {
+        imageData = userFromList['IMAGE'].toString();
+      }
+    }
     setState(() {
       _userName = fullName.isNotEmpty ? fullName : _translate(context, 'admin');
-      _userImageUrl =
-          imageData.isNotEmpty ? 'data:image/jpeg;base64,$imageData' : '';
+      _userImageUrl = imageData;
       _hasError = false;
     });
   }
 
   String _translate(BuildContext context, String key) {
-    final languageProvider =
-        Provider.of<LanguageProvider>(context); 
+  final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
     return _translations[key]?[languageProvider.currentLocale.languageCode] ?? key;
   }
 
   bool _isArabic(BuildContext context) {
-    final languageProvider =
-        Provider.of<LanguageProvider>(context); 
+  final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
     return languageProvider.currentLocale.languageCode == 'ar';
   }
 
   Future<void> _logout() async {
-    await _auth.signOut();
-    Navigator.push(
+    // مسح بيانات المستخدم من SharedPreferences
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('userData');
+    
+    Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (context) => const LoginPage()),
     );
@@ -230,7 +375,6 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
         _isArabic(context) ? Icons.language : Icons.language,
         color: Colors.white,
       ),
-      
       onPressed: () {
         Provider.of<LanguageProvider>(context, listen: false).toggleLanguage();
       },
@@ -246,7 +390,7 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
         actions: [
           TextButton(
             onPressed: () => ScaffoldMessenger.of(context).clearMaterialBanners(),
-            child: const Text('إغلاق', style: TextStyle(color: Colors.white)),
+            child: Text(_translate(context, 'close'), style: const TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -254,36 +398,78 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
   }
 
   void _listenForNotifications() {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    final notificationsRef = FirebaseDatabase.instance.ref('notifications/${user.uid}');
-    notificationsRef.onChildAdded.listen((event) {
-      final data = event.snapshot.value as Map?;
-      if (data != null && data['read'] == false) {
+    // يمكن تنفيذ هذه الوظيفة باستخدام تقنية Polling أو WebSockets
+    // كما هو موضح في ملف main.dart السابق
+    _checkForNotifications();
+  }
+
+  void _checkForNotifications() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userDataJson = prefs.getString('userData');
+      
+      if (userDataJson == null) return;
+      
+      final userData = json.decode(userDataJson);
+      final userId = userData['userId'];
+      
+      final response = await http.get(
+        Uri.parse('$_apiBaseUrl/notifications/$userId?unread=true'),
+        headers: {'Content-Type': 'application/json'},
+      );
+
+      if (response.statusCode == 200) {
+        final List<dynamic> notifications = json.decode(response.body);
+        
+        for (var notification in notifications) {
+          if (notification['read'] == false) {
         if (mounted) {
           setState(() {
             hasNewNotification = true;
           });
+              
           String bannerMsg;
-          if (data['title'] != null) {
-            bannerMsg = data['title'].toString();
-            if (data['message'] != null && data['message'].toString().trim().isNotEmpty) {
-              bannerMsg += '\n${data['message']}';
+              if (notification['title'] != null) {
+                bannerMsg = notification['title'].toString();
+                if (notification['message'] != null && notification['message'].toString().trim().isNotEmpty) {
+                  bannerMsg += '\n${notification['message']}';
             }
           } else {
             bannerMsg = 'لديك إشعار جديد';
           }
+              
           showDashboardBanner(
             bannerMsg,
             backgroundColor: Colors.blue.shade700,
           );
+              
+              // تحديث حالة الإشعار كمقروء
+              await http.patch(
+                Uri.parse('$_apiBaseUrl/notifications/$userId/${notification['id']}'),
+                headers: {'Content-Type': 'application/json'},
+                body: json.encode({'read': true}),
+              );
+            }
+          }
         }
+      }
+    } catch (e) {
+      debugPrint('Error checking notifications: $e');
+    }
+    
+    // التحقق مرة أخرى بعد فترة
+    Future.delayed(const Duration(seconds: 30), () {
+      if (mounted) {
+        _checkForNotifications();
       }
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    // استهلاك LanguageProvider لإعادة بناء الواجهة عند تغيير اللغة
+    return Consumer<LanguageProvider>(
+      builder: (context, languageProvider, _) {
     return LayoutBuilder(
       builder: (context, constraints) {
         return Directionality(
@@ -314,10 +500,10 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
                         setState(() {
                           hasNewNotification = false;
                         });
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(builder: (context) => const NotificationsPage()),
-                        );
+                            // Navigator.push(
+                            //   context,
+                            //   MaterialPageRoute(builder: (context) => const NotificationsPage()),
+                            // );
                       },
                     ),
                     if (hasNewNotification)
@@ -381,6 +567,8 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
                                     onLogout: _logout,
                                     parentContext: context,
                                     translate: _translate,
+                                        allUsers: allUsers,
+                                        userRole: 'admin', // إضافة هذا السطر
                                   ),
                                   Positioned(
                                     top: 8,
@@ -409,6 +597,8 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
         );
       },
     );
+      },
+    );
   }
 
   Widget _buildMainContent(BuildContext context) {
@@ -420,6 +610,9 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
     final gridCount = isWide ? 4 : (isTablet ? 3 : 2);
     final horizontalPadding = isWide ? 60.0 : (isTablet ? 32.0 : 12.0);
     final gridChildAspectRatio = isWide ? 1.1 : (isTablet ? 1.2 : 1.1);
+
+    // الحصول على قائمة الفيتشرات
+    final features = getFeaturesList(context);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -444,7 +637,7 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
                     child: GridView.builder(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
-                      itemCount: 5,
+                      itemCount: features.length, // استخدام length من القائمة المعرفة
                       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: gridCount,
                         crossAxisSpacing: 15,
@@ -452,95 +645,6 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
                         childAspectRatio: gridChildAspectRatio,
                       ),
                       itemBuilder: (context, index) {
-                        final features = [
-                          {
-                            'icon': Icons.people,
-                            'title': _translate(context, 'manage_users'),
-                            'color': Colors.blue,
-                            'onTap': () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => EditUserPage(
-                                    user: allUsers.isNotEmpty ? allUsers.first : {},
-                                    usersList: allUsers,
-                                    userName: _userName,
-                                    userImageUrl: _userImageUrl,
-                                    translate: _translate,
-                                    onLogout: _logout,
-                                  ),
-                                ),
-                              );
-                            },
-                          },
-                          {
-                            'icon': Icons.person_add,
-                            'title': _translate(context, 'add_user'),
-                            'color': Colors.green,
-                            'onTap': () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => AddUserPage(
-                                    userName: _userName,
-                                    userImageUrl: _userImageUrl,
-                                    translate: _translate,
-                                    onLogout: _logout,
-                                  ),
-                                ),
-                              );
-                            },
-                          },
-                          {
-                            'icon': Icons.person_add,
-                            'title': _translate(context, 'add_user_student'),
-                            'color': Colors.green,
-                            'onTap': () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => AddDentalStudentPage(
-                                    userName: _userName,
-                                    userImageUrl: _userImageUrl,
-                                    translate: _translate,
-                                    onLogout: _logout,
-                                  ),
-                                ),
-                              );
-                            },
-                          },
-                          {
-                            'icon': Icons.group,
-                            'title': _translate(context, 'manage_study_groups'),
-                            'color': Colors.green,
-                            'onTap': () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => AdminManageGroupsPage(
-                                    userName: _userName,
-                                    userImageUrl: _userImageUrl,
-                                    translate: _translate,
-                                    onLogout: _logout,
-                                  ),
-                                ),
-                              );
-                            },
-                          },
-                          {
-                            'icon': Icons.assignment_ind,
-                            'title': _isArabic(context) ? 'تعيين المرضى للطلاب' : 'Assign Patients to Students',
-                            'color': Colors.deepPurple,
-                            'onTap': () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => const AssignPatientsAdminPage(),
-                                ),
-                              );
-                            },
-                          },
-                        ];
                         final feature = features[index];
                         return _buildFeatureBox(
                           context,
@@ -565,14 +669,13 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
     return Container(
       margin: const EdgeInsets.all(20),
       height: isSmallScreen ? 180 : (isWide ? 240 : (isTablet ? 220 : 200)),
-      decoration: BoxDecoration(
-        image: const DecorationImage(
+      decoration: const BoxDecoration(
+        image: DecorationImage(
           image: AssetImage('lib/assets/backgrownd.png'),
           fit: BoxFit.cover,
         ),
-        color: const Color(0x4D000000),
-        borderRadius: BorderRadius.circular(15),
-        boxShadow: const [
+        color: Color(0x4D000000),
+        boxShadow: [
           BoxShadow(
             color: Colors.black12,
             blurRadius: 10,
@@ -592,16 +695,17 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _userImageUrl.isNotEmpty
+                (_userImageUrl.isNotEmpty && (_userImageUrl.startsWith('http://') || _userImageUrl.startsWith('https://')))
                     ? CircleAvatar(
                         radius: isSmallScreen ? 30 : (isWide ? 55 : (isTablet ? 45 : 40)),
                         backgroundColor: Colors.white.withAlpha(204),
                         child: ClipOval(
-                          child: Image.memory(
-                            base64Decode(_userImageUrl.replaceFirst('data:image/jpeg;base64,', '')),
+                          child: Image.network(
+                            _userImageUrl,
                             width: isSmallScreen ? 60 : (isWide ? 110 : (isTablet ? 90 : 80)),
                             height: isSmallScreen ? 60 : (isWide ? 110 : (isTablet ? 90 : 80)),
                             fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) => const Icon(Icons.error, color: Colors.red),
                           ),
                         ),
                       )
@@ -709,9 +813,7 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
                 ),
                 child: Icon(
                   icon,
-                  size: isSmallScreen
-                      ? 24
-                      : (isTablet ? 40 : 30),
+                  size: isSmallScreen ? 24 : (isTablet ? 40 : 30),
                   color: color,
                 ),
               ),
@@ -721,9 +823,7 @@ class _AdminDashboardState extends State<_AdminDashboardContent> {
                 child: Text(
                   title,
                   style: TextStyle(
-                    fontSize: isSmallScreen
-                        ? 14
-                        : (isTablet ? 18 : 16),
+                    fontSize: isSmallScreen ? 14 : (isTablet ? 18 : 16),
                     fontWeight: FontWeight.bold,
                     color: Colors.black87,
                   ),

@@ -1,5 +1,5 @@
-import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+// ignore_for_file: dead_code
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'dart:convert';
@@ -7,16 +7,13 @@ import '../providers/language_provider.dart' hide UserRole;
 import '../loginpage.dart' show UserRole, LoginPage;
 import 'role_guard.dart';
 import '../Shared/waiting_list_page.dart';
-import '../Doctor/doctor_pending_cases_page.dart';
-import '../Doctor/groups_page.dart';
 import '../Doctor/examined_patients_page.dart';
 import '../Doctor/doctor_sidebar.dart';
 import '../notifications_page.dart';
 import '../Doctor/prescription_page.dart';
 import '../Doctor/doctor_xray_request_page.dart';
-import '../Doctor/assign_patients_to_student_page.dart';
-import '../forms/clinical_procedures_form.dart';
-
+import '../Doctor/clinical_procedures_form.dart';
+import 'package:http/http.dart' as http;
 
 class SupervisorDashboard extends StatelessWidget {
   const SupervisorDashboard({super.key});
@@ -38,10 +35,64 @@ class _SupervisorDashboardContent extends StatefulWidget {
 }
 
 class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
+  // Helper to build a feature box. Replace with your actual implementation if needed.
+  Widget _buildFeatureBox(BuildContext context, IconData icon, String title, Color color, VoidCallback onTap) {
+    final width = MediaQuery.of(context).size.width;
+    final isSmallScreen = width < 350;
+    final isTablet = width >= 600;
+    return Material(
+      borderRadius: BorderRadius.circular(15),
+      elevation: 3,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(15),
+        onTap: onTap,
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(15),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: EdgeInsets.all(isTablet ? 18 : 12),
+                decoration: BoxDecoration(
+                  color: color.withAlpha(25),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  icon,
+                  size: isSmallScreen ? 24 : (isTablet ? 40 : 30),
+                  color: color,
+                ),
+              ),
+              SizedBox(height: isTablet ? 16 : 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: isSmallScreen ? 14 : (isTablet ? 18 : 16),
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
+                  textAlign: TextAlign.center,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+  
+  List<String> allowedFeatures = [];
   final Color primaryColor = const Color(0xFF2A7A94);
   final Color accentColor = const Color(0xFF4AB8D8);
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  late DatabaseReference _supervisorRef;
+  // No Firebase, use REST API
+  String? _supervisorUid;
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   String _supervisorName = '';
@@ -63,141 +114,151 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
     'reports': {'ar': 'التقارير', 'en': 'Reports'},
     'profile': {'ar': 'الملف الشخصي', 'en': 'Profile'},
     'history': {'ar': 'السجل', 'en': 'History'},
-    'app_name': {
-      'ar': 'عيادات أسنان الجامعة العربية الأمريكية',
-      'en': 'Arab American University Dental Clinics'
-    },
-    'error_loading_data': {
-      'ar': 'حدث خطأ في تحميل البيانات',
-      'en': 'Error loading data'
-    },
-    'retry': {'ar': 'إعادة المحاولة', 'en': 'Retry'},
-    'no_internet': {
-      'ar': 'لا يوجد اتصال بالإنترنت',
-      'en': 'No internet connection'
-    },
-    'server_error': {'ar': 'خطأ في السيرفر', 'en': 'Server error'},
-    'signing_out': {'ar': 'تسجيل الخروج', 'en': 'Sign out'},
-    'sign_out_error': {'ar': 'خطأ في تسجيل الخروج', 'en': 'Sign out error'},
-    'supervision_groups': {'ar': 'شعب الإشراف', 'en': 'Supervision Groups'},
+    'xray_request': {'ar': 'طلب أشعة', 'en': 'X-Ray Request'},
+    'clinical_procedures': {'ar': 'الإجراءات السريرية', 'en': 'Clinical Procedures'},
     'examined_patients': {'ar': 'المرضى المفحوصين', 'en': 'Examined Patients'},
-    'prescription': {'ar': 'وصفة طبية', 'en': 'Prescription'},
-    'xray_request': {'ar': 'طلب أشعة', 'en': 'X-ray Request'},
-    'home': {'ar': 'الرئيسية', 'en': 'Home'},
-    'show_sidebar': {'ar': 'إظهار القائمة', 'en': 'Show Sidebar'},
-    'hide_sidebar': {'ar': 'إخفاء القائمة', 'en': 'Hide Sidebar'},
-    'assign_patients_to_students': {'ar': 'تعيين مرضى للطلاب', 'en': 'Assign Patients to Students'},
+    'prescription': {'ar': 'الوصفات الطبية', 'en': 'Prescription'},
+    'error_loading_data': {'ar': 'خطأ في تحميل البيانات', 'en': 'Error loading data'},
+    'retry': {'ar': 'إعادة المحاولة', 'en': 'Retry'},
+    'close': {'ar': 'إغلاق', 'en': 'Close'},
+    'signing_out': {'ar': 'جاري تسجيل الخروج...', 'en': 'Signing out...'},
+    'sign_out_error': {'ar': 'خطأ في تسجيل الخروج', 'en': 'Sign out error'},
+    'hide_sidebar': {'ar': 'إخفاء القائمة الجانبية', 'en': 'Hide sidebar'},
+    'show_sidebar': {'ar': 'إظهار القائمة الجانبية', 'en': 'Show sidebar'},
   };
 
   @override
   void initState() {
-
     super.initState();
-    _initializeSupervisorReference();
-    _setupRealtimeListener();
+    _loadSupervisorData();
     _listenForNotifications();
-    final user = _auth.currentUser;
-    debugPrint("Current user UID: ${user?.uid}");
   }
 
-  void _initializeSupervisorReference() {
-    final user = _auth.currentUser;
-    if (user != null) {
-      _supervisorRef = FirebaseDatabase.instance.ref('users/${user.uid}');
-    }
-  }
-
-  void _setupRealtimeListener() {
-    final user = _auth.currentUser;
-    if (user == null) {
-      setState(() {
-        _supervisorName = _translate(context, 'supervisor');
-        _isLoading = false;
-      });
-      return;
-    }
-
-    _supervisorRef.onValue.listen((event) {
-      final snapshot = event.snapshot;
-      if (!snapshot.exists) {
+  Future<void> _loadSupervisorData() async {
+    setState(() {
+      _isLoading = true;
+      _hasError = false;
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userDataJson = prefs.getString('userData');
+      if (userDataJson == null) {
         setState(() {
-          _supervisorName = _translate(context, 'supervisor');
           _isLoading = false;
-          _hasError = false;
+          _hasError = true;
         });
         return;
       }
-
-      final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-      _updateSupervisorData(data);
-    }, onError: (error) {
-      debugPrint('Realtime listener error: $error');
+      final userData = json.decode(userDataJson);
+      _supervisorUid = userData['USER_ID']?.toString();
+      
+      // 🔥 التعديل: استخدام endpoint الأطباء بدلاً من المستخدمين
+      final response = await http.get(Uri.parse('http://localhost:3000/doctors/$_supervisorUid'));
+      debugPrint('API response.statusCode: ${response.statusCode}');
+      debugPrint('API response.body: ${response.body}');
+      
+      if (response.statusCode == 200) {
+        final freshUser = json.decode(response.body);
+        debugPrint('freshUser map: $freshUser');
+        
+        // تحديث SharedPreferences
+        await prefs.setString('userData', json.encode(freshUser));
+        _updateSupervisorData(freshUser);
+        
+        // 🔥 التعديل: تبسيط معالجة allowedFeatures
+        _processAllowedFeatures(freshUser);
+        
+      } else {
+        // fallback للبيانات المحفوظة
+        _updateSupervisorData(userData);
+        _processAllowedFeatures(userData);
+      }
+    } catch (e) {
+      debugPrint('❌ Error in _loadSupervisorData: $e');
       setState(() {
         _isLoading = false;
         _hasError = true;
       });
-    });
+    }
   }
 
-  void _updateSupervisorData(Map<dynamic, dynamic> data) {
-    final firstName = data['firstName']?.toString().trim() ?? '';
-    final fatherName = data['fatherName']?.toString().trim() ?? '';
-    final grandfatherName = data['grandfatherName']?.toString().trim() ?? '';
-    final familyName = data['familyName']?.toString().trim() ?? '';
+  // 🔥 NEW: دالة منفصلة لمعالجة allowedFeatures
+  void _processAllowedFeatures(Map<String, dynamic> userData) {
+    List<String> features = [];
+    
+    try {
+      // المحاولة 1: من الحقل الجديد allowedFeatures
+      if (userData['allowedFeatures'] is List) {
+        features = List<String>.from(userData['allowedFeatures']);
+        debugPrint('✅ تم تحميل الفيتشرز من allowedFeatures: $features');
+      }
+      // المحاولة 2: من الحقل القديم ALLOWED_FEATURES
+      else if (userData['ALLOWED_FEATURES'] is List) {
+        features = List<String>.from(userData['ALLOWED_FEATURES']);
+        debugPrint('✅ تم تحميل الفيتشرز من ALLOWED_FEATURES: $features');
+      }
+      // المحاولة 3: من نص JSON
+      else if (userData['ALLOWED_FEATURES'] is String) {
+        try {
+          final parsed = json.decode(userData['ALLOWED_FEATURES']);
+          if (parsed is List) {
+            features = List<String>.from(parsed);
+            debugPrint('✅ تم تحميل الفيتشرز من نص JSON: $features');
+          }
+        } catch (e) {
+          debugPrint('❌ خطأ في تحويل JSON: $e');
+        }
+      }
+      
+      debugPrint('📊 الفيتشرز النهائية: $features');
+      
+    } catch (e) {
+      debugPrint('❌ خطأ في معالجة الفيتشرز: $e');
+      features = [];
+    }
+    
+    setState(() {
+      allowedFeatures = features;
+    });
+  }
+ 
+  void _updateSupervisorData(Map data) {
+    // جلب الاسم الكامل من FULL_NAME أو تركيبة الأسماء
+    final fullName = (data['FULL_NAME'] ?? '').toString().trim();
+    String name = fullName;
+    if (name.isEmpty) {
+      final firstName = data['FIRST_NAME']?.toString().trim() ?? '';
+      final fatherName = data['FATHER_NAME']?.toString().trim() ?? '';
+      final grandfatherName = data['GRANDFATHER_NAME']?.toString().trim() ?? '';
+      final familyName = data['FAMILY_NAME']?.toString().trim() ?? '';
+      name = [
+        if (firstName.isNotEmpty) firstName,
+        if (fatherName.isNotEmpty) fatherName,
+        if (grandfatherName.isNotEmpty) grandfatherName,
+        if (familyName.isNotEmpty) familyName,
+      ].join(' ');
+    }
 
-    final fullName = [
-      if (firstName.isNotEmpty) firstName,
-      if (fatherName.isNotEmpty) fatherName,
-      if (grandfatherName.isNotEmpty) grandfatherName,
-      if (familyName.isNotEmpty) familyName,
-    ].join(' ');
-
-    final imageData = data['image']?.toString() ?? '';
+    // جلب الصورة من IMAGE
+    final imageData = data['IMAGE']?.toString().trim() ?? '';
+    String imageUrl = '';
+    if (imageData.isNotEmpty && (imageData.startsWith('http://') || imageData.startsWith('https://'))) {
+      imageUrl = imageData;
+    }
 
     setState(() {
-      _supervisorName = fullName.isNotEmpty
-          ? _isArabic(context) ? "د. $fullName" : "د. $fullName"
+      _supervisorName = name.isNotEmpty
+          ? _isArabic(context) ? "د. $name" : "د. $name"
           : _translate(context, 'supervisor');
-      _supervisorImageUrl =
-          imageData.isNotEmpty ? 'data:image/jpeg;base64,$imageData' : '';
+      _supervisorImageUrl = imageUrl;
       _isLoading = false;
       _hasError = false;
     });
   }
 
   Future<void> _loadSupervisorDataOnce() async {
-    try {
-      final user = _auth.currentUser;
-      if (user == null) {
-        if (!mounted) return;
-        setState(() {
-          _supervisorName = _translate(context, 'supervisor');
-          _isLoading = false;
-        });
-        return;
-      }
-
-      final snapshot = await _supervisorRef.get();
-      if (!mounted) return;
-
-      if (!snapshot.exists) {
-        setState(() {
-          _supervisorName = _translate(context, 'supervisor');
-          _isLoading = false;
-        });
-        return;
-      }
-
-      final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-      _updateSupervisorData(data);
-    } catch (e) {
-      debugPrint('Error loading supervisor data: $e');
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _hasError = true;
-      });
-
+    await _loadSupervisorData();
+    if (_hasError && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(_translate(context, 'error_loading_data')),
@@ -227,23 +288,7 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
   }
 
   void _listenForNotifications() {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    final notificationsRef = FirebaseDatabase.instance.ref('notifications/${user.uid}');
-    notificationsRef.onChildAdded.listen((event) {
-      final data = event.snapshot.value as Map?;
-      if (data != null && data['read'] == false) {
-        if (mounted) {
-          setState(() {
-            hasNewNotification = true;
-          });
-          showDashboardBanner(
-            data['title'] != null ? '${data['title']}\n${data['message'] ?? ''}' : _translate(context, 'new_notification'),
-            backgroundColor: Colors.blue.shade700,
-          );
-        }
-      }
-    });
+    // يمكن إضافة منطق الاستماع للإشعارات لاحقاً
   }
 
   String _translate(BuildContext context, String key) {
@@ -279,7 +324,7 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
         },
       );
 
-      await _auth.signOut();
+      await Future.delayed(const Duration(milliseconds: 500));
       if (!mounted) return;
 
       Navigator.of(context).pop();
@@ -322,7 +367,7 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
         appBar: AppBar(
           backgroundColor: primaryColor,
           title: Text(
-            _translate(context, 'app_name'),
+            'Dental Clinics',
             style: TextStyle(
               color: Colors.white,
               fontSize: isSmallScreen ? 16 : 18,
@@ -392,13 +437,15 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
         drawer: !isLargeScreen
             ? DoctorSidebar(
                 primaryColor: primaryColor,
+                userRole: 'doctor',
                 accentColor: accentColor,
                 userName: _supervisorName,
                 userImageUrl: _supervisorImageUrl,
                 onLogout: _signOut,
                 parentContext: context,
                 translate: _translate,
-                doctorUid: FirebaseAuth.instance.currentUser?.uid ?? '',
+                doctorUid: _supervisorUid ?? '',
+                allowedFeatures: allowedFeatures,
               )
             : null,
         body: Stack(
@@ -410,6 +457,7 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
                   width: 260,
                   child: DoctorSidebar(
                     primaryColor: primaryColor,
+                    userRole: 'doctor',
                     accentColor: accentColor,
                     userName: _supervisorName,
                     userImageUrl: _supervisorImageUrl,
@@ -417,7 +465,8 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
                     parentContext: context,
                     collapsed: false,
                     translate: _translate,
-                    doctorUid: FirebaseAuth.instance.currentUser?.uid ?? '',
+                    doctorUid: _supervisorUid ?? '',
+                    allowedFeatures: allowedFeatures,
                   ),
                 ),
               ),
@@ -451,10 +500,7 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
           children: [
             const Icon(Icons.error_outline, size: 50, color: Colors.red),
             const SizedBox(height: 20),
-            Text(
-              _getErrorMessage(),
-              style: const TextStyle(fontSize: 18),
-            ),
+            Text(_getErrorMessage(), style: const TextStyle(fontSize: 18)),
             const SizedBox(height: 20),
             ElevatedButton(
               onPressed: _loadSupervisorDataOnce,
@@ -462,457 +508,121 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
                 backgroundColor: primaryColor,
                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
               ),
-              child: Text(
-                _translate(context, 'retry'),
-                style: const TextStyle(color: Colors.white),
-              ),
+              child: Text(_translate(context, 'retry'), style: const TextStyle(color: Colors.white)),
             ),
             if (_retryCount > 0)
               Padding(
                 padding: const EdgeInsets.only(top: 10),
-                child: Text(
-                  '($_retryCount/$_maxRetries)',
-                  style: const TextStyle(color: Colors.grey),
-                ),
+                child: Text('($_retryCount/$_maxRetries)', style: const TextStyle(color: Colors.grey)),
               ),
           ],
         ),
       );
     }
 
-
-    final user = _auth.currentUser;
-    if (user != null) {
-      return FutureBuilder<DataSnapshot>(
-        future: _supervisorRef.get(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasData && snapshot.data != null) {
-            final data = snapshot.data!.value as Map<dynamic, dynamic>?;
-            final isActive = data != null && (data['isActive'] == true || data['isActive'] == 1);
-            if (!isActive) {
-              return const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(32.0),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.block, color: Colors.red, size: 60),
-                      SizedBox(height: 24),
-                      Text(
-                        'يرجى مراجعة إدارة عيادات الأسنان في الجامعة لتفعيل حسابك.',
-                        style: TextStyle(fontSize: 20, color: Colors.red, fontWeight: FontWeight.bold),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }
-          }
-
-          final mediaQuery = MediaQuery.of(context);
-
-          final features = [
-            {
-              'icon': Icons.list_alt,
-              'title': _translate(context, 'waiting_list'),
-              'color': primaryColor,
-              'onTap': () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const WaitingListPage(userRole: 'doctor'),
-                  ),
-                );
-              }
-            },
-            {
-              'icon': Icons.medical_information,
-              'title': _isArabic(context) ? 'نموذج الإجراءات السريرية' : 'Clinical Procedures Form',
-              'color': Colors.redAccent,
-              'onTap': () {
-                final user = FirebaseAuth.instance.currentUser;
-                if (user != null) {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => ClinicalProceduresForm(uid: user.uid),
-                    ),
-                  );
-                }
-              }
-            },
-            {
-              'icon': Icons.school,
-              'title': _translate(context, 'students_evaluation'),
-              'color': Colors.green,
-              'onTap': () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (context) => const DoctorPendingCasesPage()),
-                );
-              }
-            },
-            {
-              'icon': Icons.group,
-              'title': _translate(context, 'supervision_groups'),
-              'color': Colors.blue,
-              'onTap': () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const DoctorGroupsPage(),
-                  ),
-                );
-              }
-            },
-            {
-              'icon': Icons.check_circle,
-              'title': _translate(context, 'examined_patients'),
-              'color': Colors.teal,
-              'onTap': () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const ExaminedPatientsPage(),
-                  ),
-                );
-              }
-            },
-            {
-              'icon': Icons.medical_services,
-              'title': _translate(context, 'prescription'),
-              'color': Colors.deepPurple,
-              'onTap': () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => PrescriptionPage(
-                      isArabic: _isArabic(context),
-                    ),
-                  ),
-                );
-              }
-            },
-            {
-              'icon': Icons.camera_alt,
-              'title': _translate(context, 'xray_request'),
-              'color': Colors.orange,
-              'onTap': () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const DoctorXrayRequestPage(),
-                  ),
-                );
-              }
-            },
-            {
-              'icon': Icons.assignment_ind,
-              'title': _translate(context, 'assign_patients_to_students'),
-              'color': Colors.indigo,
-              'onTap': () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const AssignPatientsToStudentPage(),
-                  ),
-                );
-              }
-            },
-          ];
-
-          return LayoutBuilder(
-            builder: (context, constraints) {
-              final width = constraints.maxWidth;
-              final isSmallScreen = width < 350;
-              final isWide = width > 900;
-              final isTablet = width >= 600 && width <= 900;
-              final crossAxisCount = isWide ? 4 : (isTablet ? 3 : 2);
-              final gridChildAspectRatio = isWide ? 1.1 : (isTablet ? 1.2 : 1.1);
-
-              return Stack(
-                children: [
-                  Container(
-                    decoration: const BoxDecoration(
-                      color: Colors.white,
-                    ),
-                  ),
-                  SingleChildScrollView(
-                    padding: EdgeInsets.only(
-                      bottom: mediaQuery.padding.bottom + (isSmallScreen ? 10 : 20),
-                    ),
-                    child: Column(
-                      children: [
-                        Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-                          height: isSmallScreen ? 210 : (isWide ? 210 : (isTablet ? 250 : 230)),
-                          decoration: BoxDecoration(
-                            image: const DecorationImage(
-                              image: AssetImage('lib/assets/backgrownd.png'),
-                              fit: BoxFit.fill,
-                            ),
-                            color: const Color(0x4D000000),
-                            borderRadius: BorderRadius.circular(15),
-                            boxShadow: const [
-                              BoxShadow(
-                                color: Colors.black12,
-                                blurRadius: 10,
-                                offset: Offset(0, 5),
-                              ),
-                            ],
-                          ),
-                          child: Stack(
-                            children: [
-                              Container(
-                                decoration: BoxDecoration(
-                                  color: const Color(0x33000000),
-                                  borderRadius: BorderRadius.circular(15),
-                                ),
-                              ),
-                              Center(
-                                child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    _supervisorImageUrl.isNotEmpty
-                                        ? CircleAvatar(
-                                            radius: isSmallScreen
-                                                ? 30
-                                                : (isWide ? 55 : (isTablet ? 45 : 40)),
-                                            backgroundColor:
-                                                Colors.white.withAlpha(204),
-                                            child: ClipOval(
-                                              child: Image.memory(
-                                                base64Decode(_supervisorImageUrl.replaceFirst('data:image/jpeg;base64,', '')),
-                                                width: isSmallScreen
-                                                    ? 60
-                                                    : (isWide ? 110 : (isTablet ? 90 : 80)),
-                                                height: isSmallScreen
-                                                    ? 60
-                                                    : (isWide ? 110 : (isTablet ? 90 : 80)),
-                                                fit: BoxFit.cover,
-                                              ),
-                                            ),
-                                          )
-                                        : CircleAvatar(
-                                            radius: isSmallScreen
-                                                ? 30
-                                                : (isWide ? 55 : (isTablet ? 45 : 40)),
-                                            backgroundColor:
-                                                Colors.white.withAlpha(204),
-                                            child: Icon(
-                                              Icons.person,
-                                              size: isSmallScreen
-                                                  ? 30
-                                                  : (isWide ? 55 : (isTablet ? 45 : 40)),
-                                              color: accentColor,
-                                            ),
-                                          ),
-                                    SizedBox(height: isWide ? 30 : (isTablet ? 25 : 15)),
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                                      child: Text(
-                                        _supervisorName,
-                                        style: TextStyle(
-                                          fontSize: isSmallScreen
-                                              ? 16
-                                              : (isWide ? 28 : (isTablet ? 22 : 20)),
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                        textAlign: TextAlign.center,
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: GridView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: features.length,
-                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: crossAxisCount,
-                              crossAxisSpacing: 15,
-                              mainAxisSpacing: 15,
-                              childAspectRatio: gridChildAspectRatio,
-                            ),
-                            itemBuilder: (context, index) {
-                              final feature = features[index];
-                              return _buildFeatureBox(
-                                context,
-                                feature['icon'] as IconData,
-                                feature['title'] as String,
-                                feature['color'] as Color,
-                                feature['onTap'] as VoidCallback,
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              );
-            },
-          );
-        },
-      );
-    }
-
-    final mediaQuery = MediaQuery.of(context);
-
-    final features = [
-      {
-        'icon': Icons.list_alt,
-        'title': _translate(context, 'waiting_list'),
-        'color': primaryColor,
-        'onTap': () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => const WaitingListPage(userRole: 'doctor'),
-            ),
-          );
-        }
-      },
-      
-      {
-        'icon': Icons.medical_information,
-        'title': _isArabic(context) ? 'نموذج الإجراءات السريرية' : 'Clinical Procedures Form',
-        'color': Colors.redAccent,
-        'onTap': () {
-          final user = FirebaseAuth.instance.currentUser;
-          if (user != null) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) => ClinicalProceduresForm(uid: user.uid),
-              ),
-            );
-          }
-        }
-      },
-      {
-        'icon': Icons.medical_information,
-        'title': _isArabic(context) ? 'نموذج الإجراءات السريرية' : 'Clinical Procedures Form',
-        'color': Colors.redAccent,
-        'onTap': () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) {
-                final user = FirebaseAuth.instance.currentUser;
-                if (user != null) {
-                  return ClinicalProceduresForm(uid: user.uid);
-                } else {
-                  return const SizedBox();
-                }
-              },
-            ),
-          );
-        }
-      },
-      {
-        'icon': Icons.school,
-        'title': _translate(context, 'students_evaluation'),
-        'color': Colors.green,
-        'onTap': () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-                builder: (context) => const DoctorPendingCasesPage()),
-          );
-        }
-      },
-      {
-        'icon': Icons.group,
-        'title': _translate(context, 'supervision_groups'),
-        'color': Colors.blue,
-        'onTap': () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => const DoctorGroupsPage(),
-            ),
-          );
-        }
-      },
-      {
-        'icon': Icons.check_circle,
-        'title': _translate(context, 'examined_patients'),
-        'color': Colors.teal,
-        'onTap': () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => const ExaminedPatientsPage(),
-            ),
-          );
-        }
-      },
-      {
-        'icon': Icons.medical_services,
-        'title': _translate(context, 'prescription'),
-        'color': Colors.deepPurple,
-        'onTap': () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => PrescriptionPage(
-                isArabic: _isArabic(context),
-              ),
-            ),
-          );
-        }
-      },
-      {
-        'icon': Icons.camera_alt,
-        'title': _translate(context, 'xray_request'),
-        'color': Colors.orange,
-        'onTap': () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => const DoctorXrayRequestPage(),
-            ),
-          );
-        }
-      },
-      {
-        'icon': Icons.assignment_ind,
-        'title': _translate(context, 'assign_patients_to_students'),
-        'color': Colors.indigo,
-        'onTap': () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => const AssignPatientsToStudentPage(),
-            ),
-          );
-        }
-      },
-    ];
+    // 🔥 إضافة طباعة للتحقق من الفيتشرز
+    debugPrint('🎯 الفيتشرز النهائية للعرض: $allowedFeatures');
 
     return LayoutBuilder(
       builder: (context, constraints) {
+        final mediaQuery = MediaQuery.of(context);
+        final allFeatureBoxes = [
+          {
+            'key': 'waiting_list',
+            'icon': Icons.list_alt,
+            'title': _translate(context, 'waiting_list'),
+            'color': primaryColor,
+            'onTap': () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const WaitingListPage(userRole: 'doctor'),
+                ),
+              );
+            }
+          },
+          {
+            'key': 'clinical_procedures_form',
+            'icon': Icons.medical_information,
+            'title': _isArabic(context) ? 'نموذج الإجراءات السريرية' : 'Clinical Procedures Form',
+            'color': Colors.redAccent,
+            'onTap': () {
+              if (_supervisorUid != null) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ClinicalProceduresForm(uid: _supervisorUid!),
+                  ),
+                );
+              }
+            }
+          },
+         {
+  'key': 'examined_patients',
+  'icon': Icons.check_circle,
+  'title': _translate(context, 'examined_patients'),
+  'color': Colors.teal,
+  'onTap': () {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DoctorExaminedPatientsPage(
+          doctorName: _supervisorName,
+          doctorImageUrl: _supervisorImageUrl,
+          currentUserId: _supervisorUid,
+          userAllowedFeatures: allowedFeatures,
+        ),
+      ),
+    );
+  }
+},
+          {
+            'key': 'prescription',
+            'icon': Icons.medical_services,
+            'title': _translate(context, 'prescription'),
+            'color': Colors.deepPurple,
+            'onTap': () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+             builder: (context) => PrescriptionPage(
+  uid: _supervisorUid!,
+),
+                ),
+              );
+            }
+          },
+          {
+            'key': 'xray_request',
+            'icon': Icons.camera_alt,
+            'title': _translate(context, 'xray_request'),
+            'color': Colors.orange,
+            'onTap': () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const DoctorXrayRequestPage(),
+                ),
+              );
+            }
+          },
+        ];
+        
+        // 🔥 التعديل: تصفية الفيتشرز بناءً على allowedFeatures
+        final features = allFeatureBoxes.where((f) => allowedFeatures.contains(f['key'])).toList();
+        
+        debugPrint('📋 عدد الفيتشرز المتاحة للعرض: ${features.length}');
+        for (var f in features) {
+          debugPrint('   - ${f['key']}: ${f['title']}');
+        }
+
         final width = constraints.maxWidth;
         final isSmallScreen = width < 350;
         final isWide = width > 900;
         final isTablet = width >= 600 && width <= 900;
         final crossAxisCount = isWide ? 4 : (isTablet ? 3 : 2);
         final gridChildAspectRatio = isWide ? 1.1 : (isTablet ? 1.2 : 1.1);
-
+        
         return Stack(
           children: [
             Container(
@@ -927,12 +637,12 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
               child: Column(
                 children: [
                   Container(
-                    margin: const EdgeInsets.all(20),
-                    height: isSmallScreen ? 180 : (isWide ? 240 : (isTablet ? 220 : 200)),
+                    margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+                    height: isSmallScreen ? 210 : (isWide ? 210 : (isTablet ? 250 : 230)),
                     decoration: BoxDecoration(
                       image: const DecorationImage(
                         image: AssetImage('lib/assets/backgrownd.png'),
-                        fit: BoxFit.cover,
+                        fit: BoxFit.fill,
                       ),
                       color: const Color(0x4D000000),
                       borderRadius: BorderRadius.circular(15),
@@ -956,16 +666,15 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              _supervisorImageUrl.isNotEmpty
+                              (_supervisorImageUrl.isNotEmpty && (_supervisorImageUrl.startsWith('http://') || _supervisorImageUrl.startsWith('https://')))
                                   ? CircleAvatar(
                                       radius: isSmallScreen
                                           ? 30
                                           : (isWide ? 55 : (isTablet ? 45 : 40)),
-                                      backgroundColor:
-                                          Colors.white.withAlpha(204),
+                                      backgroundColor: Colors.white.withAlpha(204),
                                       child: ClipOval(
-                                        child: Image.memory(
-                                          base64Decode(_supervisorImageUrl.replaceFirst('data:image/jpeg;base64,', '')),
+                                        child: Image.network(
+                                          _supervisorImageUrl,
                                           width: isSmallScreen
                                               ? 60
                                               : (isWide ? 110 : (isTablet ? 90 : 80)),
@@ -973,6 +682,7 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
                                               ? 60
                                               : (isWide ? 110 : (isTablet ? 90 : 80)),
                                           fit: BoxFit.cover,
+                                          errorBuilder: (context, error, stackTrace) => const Icon(Icons.error, color: Colors.red),
                                         ),
                                       ),
                                     )
@@ -980,8 +690,7 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
                                       radius: isSmallScreen
                                           ? 30
                                           : (isWide ? 55 : (isTablet ? 45 : 40)),
-                                      backgroundColor:
-                                          Colors.white.withAlpha(204),
+                                      backgroundColor: Colors.white.withAlpha(204),
                                       child: Icon(
                                         Icons.person,
                                         size: isSmallScreen
@@ -1013,30 +722,53 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
                       ],
                     ),
                   ),
-                  Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: GridView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: features.length,
-                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: crossAxisCount,
-                        crossAxisSpacing: 15,
-                        mainAxisSpacing: 15,
-                        childAspectRatio: gridChildAspectRatio,
+                  
+                  // 🔥 عرض رسالة إذا لم توجد فيتشرز
+                  if (features.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        children: [
+                          Icon(Icons.info_outline, size: 50, color: Colors.grey.shade400),
+                          const SizedBox(height: 10),
+                          Text(
+                            _isArabic(context) 
+                                ? 'لا توجد صلاحيات متاحة حالياً'
+                                : 'No features available at the moment',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Colors.grey.shade600,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
                       ),
-                      itemBuilder: (context, index) {
-                        final feature = features[index];
-                        return _buildFeatureBox(
-                          context,
-                          feature['icon'] as IconData,
-                          feature['title'] as String,
-                          feature['color'] as Color,
-                          feature['onTap'] as VoidCallback,
-                        );
-                      },
+                    )
+                  else
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: features.length,
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: crossAxisCount,
+                          crossAxisSpacing: 15,
+                          mainAxisSpacing: 15,
+                          childAspectRatio: gridChildAspectRatio,
+                        ),
+                        itemBuilder: (context, index) {
+                          final feature = features[index];
+                          return _buildFeatureBox(
+                            context,
+                            feature['icon'] as IconData,
+                            feature['title'] as String,
+                            feature['color'] as Color,
+                            feature['onTap'] as VoidCallback,
+                          );
+                        },
+                      ),
                     ),
-                  ),
                 ],
               ),
             ),
@@ -1045,68 +777,4 @@ class _SupervisorDashboardState extends State<_SupervisorDashboardContent> {
       },
     );
   }
-
-  Widget _buildFeatureBox(
-    BuildContext context,
-    IconData icon,
-    String title,
-    Color color,
-    VoidCallback onTap,
-  ) {
-    final width = MediaQuery.of(context).size.width;
-    final isSmallScreen = width < 350;
-    final isTablet = width >= 600;
-
-    return Material(
-      borderRadius: BorderRadius.circular(15),
-      elevation: 3,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(15),
-        onTap: onTap,
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(15),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                padding: EdgeInsets.all(isTablet ? 18 : 12),
-                decoration: BoxDecoration(
-                  color: color.withAlpha(25),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  icon,
-                  size: isSmallScreen
-                      ? 24
-                      : (isTablet ? 40 : 30),
-                  color: color,
-                ),
-              ),
-              SizedBox(height: isTablet ? 16 : 8),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: isSmallScreen
-                        ? 14
-                        : (isTablet ? 18 : 16),
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
 }

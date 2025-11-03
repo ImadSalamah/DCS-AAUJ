@@ -1,12 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
 import 'dart:convert';
 import '../providers/language_provider.dart' hide UserRole;
 import '../loginpage.dart' show UserRole, LoginPage;
 import 'role_guard.dart';
-import '../Shared/patient_files.dart';
 import '../Shared/waiting_list_page.dart';
 import '../Shared/add_patient_page.dart';
 import '../Secretry/account_approv.dart';
@@ -14,6 +11,8 @@ import '../Secretry/secretary_sidebar.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../notifications_page.dart';
+import '../Secretry/all_patients_page.dart';
+import '../Admin/booking_settings_page.dart';
 
 class SecretaryDashboard extends StatelessWidget {
   const SecretaryDashboard({super.key});
@@ -124,19 +123,12 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
   }
   final Color primaryColor = const Color(0xFF2A7A94);
   final Color accentColor = const Color(0xFF4AB8D8);
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  late DatabaseReference _userRef;
-  late DatabaseReference _patientsRef;
-  late DatabaseReference _pendingAccountsRef;
-
   String _userName = '';
   String _userImageUrl = '';
-  Uint8List? _userImageBytes;
   List<Map<String, dynamic>> waitingList = [];
   List<Map<String, dynamic>> pendingAccounts = [];
   bool _isLoading = true;
   bool _hasError = false;
-
   bool hasNewNotification = false;
 
   final Map<String, Map<String, String>> _translations = {
@@ -168,17 +160,16 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
       'en': 'No internet connection'
     },
     'server_error': {'ar': 'خطأ في السيرفر', 'en': 'Server error'},
+  'all_patients': {'ar': 'سجل المرضى', 'en': 'Patients Registry'},
+  'bookings': {'ar': 'الحجوزات', 'en': 'Bookings'},
   };
 
   @override
   void initState() {
     super.initState();
-    _initializeReferences();
-    _setupRealtimeListener();
+    _loadSecretaryData();
     _loadData();
     _checkNotificationBannerShown();
-    _listenForNotifications();
-
   }
 
   Future<void> _checkNotificationBannerShown() async {
@@ -188,129 +179,17 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
     });
   }
 
-  void _initializeReferences() {
-    final user = _auth.currentUser;
-    if (user != null) {
-      _userRef = FirebaseDatabase.instance.ref('users/${user.uid}');
-    }
-    _patientsRef = FirebaseDatabase.instance.ref('patients');
-    _pendingAccountsRef = FirebaseDatabase.instance.ref('pendingAccounts');
-  }
-
-  void _setupRealtimeListener() {
-    final user = _auth.currentUser;
-    if (user == null) {
-      if (mounted) {
-        setState(() {
-          _userName = _translate(context, 'secretary');
-          _isLoading = false;
-          _hasError = false;
-        });
-      }
-      return;
-    }
-
-    _userRef.onValue.listen((event) {
-      final snapshot = event.snapshot;
-      if (!snapshot.exists) {
-        if (mounted) {
-          setState(() {
-            _userName = _translate(context, 'secretary');
-            _isLoading = false;
-            _hasError = false;
-          });
-        }
-        return;
-      }
-
-      final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-      _updateUserData(data);
-    }, onError: (error) {
-      debugPrint('Realtime listener error: $error');
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _hasError = true;
-        });
-      }
-    });
-  }
-
   Future<void> _loadData() async {
-    try {
-      final patientsSnapshot = await _patientsRef.get();
-      final pendingSnapshot = await _pendingAccountsRef.get();
-
+    // تم إلغاء جلب بيانات المرضى والحسابات المعلقة مؤقتاً حتى يتم تفعيل المسارات في السيرفر
       if (mounted) {
         setState(() {
-          waitingList = _parseSnapshot(patientsSnapshot);
-          pendingAccounts = _parseSnapshot(pendingSnapshot);
+        waitingList = [];
+        pendingAccounts = [];
           _hasError = false;
         });
       }
-    } catch (e) {
-      debugPrint('Error loading data: $e');
-      if (mounted) {
-        setState(() {
-          _hasError = true;
-        });
-      }
-    }
   }
 
-  List<Map<String, dynamic>> _parseSnapshot(DataSnapshot snapshot) {
-    if (!snapshot.exists) return [];
-
-    final List<Map<String, dynamic>> result = [];
-    final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-
-    data.forEach((key, value) {
-      if (value is Map<dynamic, dynamic>) {
-        result.add(Map<String, dynamic>.from(value));
-      }
-    });
-
-    return result;
-  }
-
-  void _updateUserData(Map<dynamic, dynamic> data) async {
-    final firstName = data['firstName']?.toString().trim() ?? '';
-    final fatherName = data['fatherName']?.toString().trim() ?? '';
-    final grandfatherName = data['grandfatherName']?.toString().trim() ?? '';
-    final familyName = data['familyName']?.toString().trim() ?? '';
-
-    final fullName = [
-      if (firstName.isNotEmpty) firstName,
-      if (fatherName.isNotEmpty) fatherName,
-      if (grandfatherName.isNotEmpty) grandfatherName,
-      if (familyName.isNotEmpty) familyName,
-    ].join(' ');
-
-    final imageData = data['image']?.toString() ?? '';
-    Uint8List? imageBytes;
-    if (imageData.isNotEmpty) {
-      try {
-        imageBytes = await compute(_decodeBase64Image, imageData);
-      } catch (e) {
-        imageBytes = null;
-      }
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _userName =
-          fullName.isNotEmpty ? fullName : _translate(context, 'secretary');
-      _userImageUrl =
-          imageData.isNotEmpty ? 'data:image/jpeg;base64,$imageData' : '';
-      _userImageBytes = imageBytes;
-      _isLoading = false;
-      _hasError = false;
-    });
-  }
-
-  static Uint8List _decodeBase64Image(String base64Str) {
-    return base64Decode(base64Str.replaceFirst('data:image/jpeg;base64,', ''));
-  }
 
   String _translate(BuildContext context, String key) {
     final languageProvider =
@@ -337,11 +216,15 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
   }
 
   String _getErrorMessage() {
+    if (_hasError) {
+      return _translate(context, 'server_error');
+    }
     return _translate(context, 'error_loading_data');
   }
 
   Future<void> _logout() async {
-    await _auth.signOut();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('userData');
     Navigator.pushReplacement(
       // ignore: use_build_context_synchronously
       context,
@@ -394,35 +277,6 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
     Future.delayed(const Duration(seconds: 4), () {
       if (mounted) {
         ScaffoldMessenger.of(context).clearMaterialBanners();
-      }
-    });
-  }
-
-  void _listenForNotifications() {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    final notificationsRef = FirebaseDatabase.instance.ref('notifications/${user.uid}');
-    notificationsRef.onChildAdded.listen((event) {
-      final data = event.snapshot.value as Map?;
-      if (data != null && data['read'] == false) {
-        if (mounted) {
-          setState(() {
-            hasNewNotification = true;
-          });
-          String bannerMsg;
-          if (data['title'] != null) {
-            bannerMsg = data['title'].toString();
-            if (data['message'] != null && data['message'].toString().trim().isNotEmpty) {
-              bannerMsg += '\n${data['message']}';
-            }
-          } else {
-            bannerMsg = 'لديك إشعار جديد';
-          }
-          showDashboardBanner(
-            bannerMsg,
-            backgroundColor: Colors.blue.shade700,
-          );
-        }
       }
     });
   }
@@ -509,7 +363,7 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
             primaryColor: primaryColor,
             accentColor: accentColor,
             userName: _userName.isNotEmpty ? _userName : _translate(context, 'secretary'),
-            userImageUrl: (_userImageUrl.isNotEmpty && _userImageBytes != null) ? _userImageUrl : '',
+            userImageUrl: _userImageUrl,
             onLogout: _logout,
             parentContext: context,
             collapsed: false, 
@@ -524,10 +378,6 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
   }
 
   Widget _buildBody(BuildContext context, {bool isLargeScreen = false}) {
-    final mediaQuery = MediaQuery.of(context);
-    final width = mediaQuery.size.width;
-    final isSmallScreen = width < 600;
-
     if (_isLoading) {
       return const Center(
         child: CircularProgressIndicator(),
@@ -546,233 +396,19 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
               style: const TextStyle(fontSize: 18),
               textAlign: TextAlign.center,
             ),
-          ],
-        ),
-      );
-    }
-
-    final user = _auth.currentUser;
-    if (user != null) {
-      return FutureBuilder<DataSnapshot>(
-        future: _userRef.get(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasData && snapshot.data != null) {
-            final data = snapshot.data!.value as Map<dynamic, dynamic>?;
-            final isActive = data != null && (data['isActive'] == true || data['isActive'] == 1);
-            if (!isActive) {
-              return const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(32.0),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.block, color: Colors.red, size: 60),
-                      SizedBox(height: 24),
-                      Text(
-                        'يرجى مراجعة إدارة عيادات الأسنان في الجامعة لتفعيل حسابك.',
-                        style: TextStyle(fontSize: 20, color: Colors.red, fontWeight: FontWeight.bold),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }
-          }
-          return Stack(
-            children: [
-              Container(
-                decoration: const BoxDecoration(
-                  color: Colors.white,
-                ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _loadSecretaryData,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: primaryColor,
               ),
-              SafeArea(
-                child: SingleChildScrollView(
-                  padding: EdgeInsets.only(
-                    bottom: mediaQuery.padding.bottom + 80,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        margin: const EdgeInsets.all(20),
-                        height: isSmallScreen ? 180 : 200,
-                        decoration: const BoxDecoration(
-                          image: DecorationImage(
-                            image: AssetImage('lib/assets/backgrownd.png'),
-                            fit: BoxFit.cover,
-                          ),
-                          color: Color(0x4D000000),
-                          borderRadius: BorderRadius.all(Radius.circular(15)),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black12,
-                              blurRadius: 10,
-                              offset: Offset(0, 5),
-                            ),
-                          ],
-                        ),
-                        child: Stack(
-                          children: [
-                            Container(
-                              decoration: BoxDecoration(
-                                color: const Color(0x33000000),
-                                borderRadius: BorderRadius.circular(15),
-                              ),
-                            ),
-                            Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  _userImageUrl.isNotEmpty && _userImageBytes != null
-                                      ? CircleAvatar(
-                                          radius: isSmallScreen ? 30 : 40,
-                                         backgroundColor: Colors.white.withAlpha(204),
-
-                                          child: ClipOval(
-                                            child: Image.memory(
-                                              _userImageBytes!,
-                                              width: isSmallScreen ? 60 : 80,
-                                              height: isSmallScreen ? 60 : 80,
-                                              fit: BoxFit.cover,
-                                            ),
-                                          ),
-                                        )
-                                      : CircleAvatar(
-                                          radius: isSmallScreen ? 30 : 40,
-                                       backgroundColor: Colors.white.withAlpha(204),
-
-                                          child: Icon(
-                                            Icons.person,
-                                            size: isSmallScreen ? 30 : 40,
-                                            color: accentColor,
-                                          ),
-                                        ),
-                                  const SizedBox(height: 15),
-                                  Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                                    child: Text(
-                                      _userName,
-                                      style: TextStyle(
-                                        fontSize: isSmallScreen ? 16 : 20,
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                      textAlign: TextAlign.center,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
+              child: Text(
+                _translate(context, 'retry'),
+                style: const TextStyle(color: Colors.white),
                                     ),
-                                  ),
-                                  const SizedBox(height: 5),
-                                  Text(
-                                    _translate(context, 'secretary'),
-                                    style: TextStyle(
-                                      fontSize: isSmallScreen ? 14 : 16,
-                                      color: Colors.white,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.all(20),
-                        child: LayoutBuilder(
-                          builder: (context, constraints) {
-                            final width = constraints.maxWidth;
-                            final isWide = width > 900;
-                            final isTablet = width >= 600 && width <= 900;
-                            final crossAxisCount = isWide ? 4 : (isTablet ? 3 : 2);
-                            final gridChildAspectRatio = isWide ? 1.1 : (isTablet ? 1.2 : 1.1);
-                            final features = [
-                              {
-                                'icon': Icons.folder,
-                                'title': _translate(context, 'patient_files'),
-                                'color': primaryColor,
-                                'onTap': () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                        builder: (context) => const PatientFilesPage(userRole: 'secretary')),
-                                  );
-                                }
-                              },
-                              {
-                                'icon': Icons.person_add,
-                                'title': _translate(context, 'add_patient'),
-                                'color': Colors.green,
-                                'onTap': () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                        builder: (context) => const AddPatientPage()),
-                                  );
-                                }
-                              },
-                              {
-                                'icon': Icons.verified_user,
-                                'title': _translate(context, 'approve_accounts'),
-                                'color': Colors.orange,
-                                'badgeCount': pendingAccounts.length,
-                                'onTap': () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                        builder: (context) => const AccountApprovalPage()),
-                                  );
-                                }
-                              },
-                              {
-                                'icon': Icons.list_alt,
-                                'title': _translate(context, 'waiting_list'),
-                                'color': primaryColor,
-                                'onTap': () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => const WaitingListPage(userRole: 'secretary'),
-                                    ),
-                                  );
-                                }
-                              },
-                            ];
-                            return GridView.builder(
-                              shrinkWrap: true,
-                              physics: const NeverScrollableScrollPhysics(),
-                              itemCount: features.length,
-                              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: crossAxisCount,
-                                crossAxisSpacing: 15,
-                                mainAxisSpacing: 15,
-                                childAspectRatio: gridChildAspectRatio,
-                              ),
-                              itemBuilder: (context, index) {
-                                final feature = features[index];
-                                return _buildFeatureBox(
-                                  context,
-                                  feature['icon'] as IconData,
-                                  feature['title'] as String,
-                                  feature['color'] as Color,
-                                  onTap: feature['onTap'] as VoidCallback,
-                                  badgeCount: (feature['badgeCount'] as int?) ?? 0,
-                                );
-                              },
-                            );
-                          },
-                        ),
                       ),
                     ],
                   ),
-                ),
-          ),
-        ],
-      );
-    },
   );
 }
 
@@ -786,14 +422,14 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
         SafeArea(
           child: SingleChildScrollView(
             padding: EdgeInsets.only(
-              bottom: mediaQuery.padding.bottom + 80,
+              bottom: MediaQuery.of(context).padding.bottom + 80,
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
                   margin: const EdgeInsets.all(20),
-                  height: isSmallScreen ? 180 : 200,
+                  height: MediaQuery.of(context).size.width < 600 ? 180 : 200,
                   decoration: const BoxDecoration(
                     image: DecorationImage(
                       image: AssetImage('lib/assets/backgrownd.png'),
@@ -821,35 +457,26 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            _userImageUrl.isNotEmpty && _userImageBytes != null
+                            _userImageUrl.isNotEmpty
                                 ? CircleAvatar(
-                                    radius: isSmallScreen ? 30 : 40,
-                                    backgroundColor: Color.fromARGB(
-                                      (Colors.white.a * 255.0 * 0.8).round() & 0xff,
-                                      (Colors.white.r * 255.0).round() & 0xff,
-                                      (Colors.white.g * 255.0).round() & 0xff,
-                                      (Colors.white.b * 255.0).round() & 0xff,
-                                    ),
-                                    child: ClipOval(
-                                      child: Image.memory(
-                                        _userImageBytes!,
-                                        width: isSmallScreen ? 60 : 80,
-                                        height: isSmallScreen ? 60 : 80,
-                                        fit: BoxFit.cover,
-                                      ),
+                                    radius: MediaQuery.of(context).size.width < 600 ? 30 : 40,
+                                    backgroundColor: Colors.white.withAlpha(204),
+                                    backgroundImage: NetworkImage(_userImageUrl),
+                                    onBackgroundImageError: (exception, stackTrace) {
+                                      // سيتم عرض الأيقونة الافتراضية تلقائياً إذا فشل تحميل الصورة
+                                    },
+                                    child: _userImageUrl.isNotEmpty ? null : Icon(
+                                      Icons.person,
+                                      size: MediaQuery.of(context).size.width < 600 ? 30 : 40,
+                                      color: accentColor,
                                     ),
                                   )
                                 : CircleAvatar(
-                                    radius: isSmallScreen ? 30 : 40,
-                                    backgroundColor: Color.fromARGB(
-                                      (Colors.white.a * 255.0 * 0.8).round() & 0xff,
-                                      (Colors.white.r * 255.0).round() & 0xff,
-                                      (Colors.white.g * 255.0).round() & 0xff,
-                                      (Colors.white.b * 255.0).round() & 0xff,
-                                    ),
+                                    radius: MediaQuery.of(context).size.width < 600 ? 30 : 40,
+                                    backgroundColor: Colors.white.withAlpha(204),
                                     child: Icon(
                                       Icons.person,
-                                      size: isSmallScreen ? 30 : 40,
+                                      size: MediaQuery.of(context).size.width < 600 ? 30 : 40,
                                       color: accentColor,
                                     ),
                                   ),
@@ -859,7 +486,7 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
                               child: Text(
                                 _userName,
                                 style: TextStyle(
-                                  fontSize: isSmallScreen ? 16 : 20,
+                                  fontSize: MediaQuery.of(context).size.width < 600 ? 16 : 20,
                                   color: Colors.white,
                                   fontWeight: FontWeight.bold,
                                 ),
@@ -872,7 +499,7 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
                             Text(
                               _translate(context, 'secretary'),
                               style: TextStyle(
-                                fontSize: isSmallScreen ? 14 : 16,
+                                fontSize: MediaQuery.of(context).size.width < 600 ? 14 : 16,
                                 color: Colors.white,
                               ),
                             ),
@@ -892,18 +519,6 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
                       final crossAxisCount = isWide ? 4 : (isTablet ? 3 : 2);
                       final gridChildAspectRatio = isWide ? 1.1 : (isTablet ? 1.2 : 1.1);
                       final features = [
-                        {
-                          'icon': Icons.folder,
-                          'title': _translate(context, 'patient_files'),
-                          'color': primaryColor,
-                          'onTap': () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                  builder: (context) => const PatientFilesPage(userRole: 'secretary')),
-                            );
-                          }
-                        },
                         {
                           'icon': Icons.person_add,
                           'title': _translate(context, 'add_patient'),
@@ -942,6 +557,33 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
                             );
                           }
                         },
+                        {
+                          'icon': Icons.calendar_today,
+                          'title': _translate(context, 'bookings'),
+                          'color': Colors.purple,
+                          'onTap': () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => const BookingSettingsPage(),
+                              ),
+                            );
+                          }
+                        },
+                        {
+                          'icon': Icons.people,
+                          'title': _translate(context, 'patient_files'),
+                          'color': Colors.blue,
+                          'onTap': () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) =>PatientFilesPage(userRole: 'secretary'),
+                              ),
+                            );
+                          }
+                        },
+                        
                       ];
                       return GridView.builder(
                         shrinkWrap: true,
@@ -975,4 +617,67 @@ class _SecretaryDashboardState extends State<_SecretaryDashboardContent> {
       ],
     );
         }   
+
+  Future<void> _loadSecretaryData() async {
+    setState(() {
+      _isLoading = true;
+      _hasError = false;
+    });
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userDataJson = prefs.getString('userData');
+      if (userDataJson == null) {
+        if (!mounted) return;
+        setState(() {
+          _userName = _translate(context, 'secretary');
+          _userImageUrl = '';
+          _isLoading = false;
+        });
+        return;
+      }
+      final userData = json.decode(userDataJson);
+      
+      // استخدام نفس منطق الكود الثاني
+      final fullName = (userData['FULL_NAME'] ?? '').toString().trim();
+      String name = fullName;
+      
+      if (name.isEmpty) {
+        final firstName = userData['FIRST_NAME']?.toString().trim() ?? '';
+        final fatherName = userData['FATHER_NAME']?.toString().trim() ?? '';
+        final grandfatherName = userData['GRANDFATHER_NAME']?.toString().trim() ?? '';
+        final familyName = userData['FAMILY_NAME']?.toString().trim() ?? '';
+        
+        name = [
+          if (firstName.isNotEmpty) firstName,
+          if (fatherName.isNotEmpty) fatherName,
+          if (grandfatherName.isNotEmpty) grandfatherName,
+          if (familyName.isNotEmpty) familyName,
+        ].join(' ');
+      }
+
+      final imageData = userData['IMAGE']?.toString().trim() ?? '';
+      String imageUrl = '';
+      if (imageData.isNotEmpty && (imageData.startsWith('http://') || imageData.startsWith('https://'))) {
+        imageUrl = imageData;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _userName = name.isNotEmpty ? name : _translate(context, 'secretary');
+        _userImageUrl = imageUrl;
+        _isLoading = false;
+        _hasError = false;
+      });
+      
+      // طباعة للتصحيح
+      
+    } catch (e) {
+      debugPrint('Error loading secretary data: $e');
+      if (!mounted) return;
+      setState(() {
+        _hasError = true;
+        _isLoading = false;
+      });
+    }
+  }
     }

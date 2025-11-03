@@ -1,4 +1,6 @@
-import 'package:firebase_database/firebase_database.dart';
+// ignore_for_file: deprecated_member_use
+
+import 'package:http/http.dart' as http;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
@@ -9,8 +11,6 @@ import 'package:intl/intl.dart' hide TextDirection;
 import 'package:provider/provider.dart';
 import '../../providers/language_provider.dart';
 import 'package:flutter/services.dart';
-import '../Secretry/secretary_sidebar.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 
 class AddPatientPage extends StatefulWidget {
   const AddPatientPage({super.key});
@@ -28,21 +28,20 @@ class AddPatientPageState extends State<AddPatientPage> {
   final _idNumberController = TextEditingController();
   final _addressController = TextEditingController();
   final _phoneController = TextEditingController();
-  final _emailController = TextEditingController();
   DateTime? _birthDate;
   String? _gender;
-  dynamic _patientImage;
+  dynamic _idImage;
+  dynamic _agreementImage;
   bool _isLoading = false;
 
   final Color primaryColor = const Color(0xFF2A7A94);
   final Color accentColor = const Color(0xFF4AB8D8);
-  final DatabaseReference _database = FirebaseDatabase.instance.ref();
   final ImagePicker _picker = ImagePicker();
-  final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  String _userName = '';
-  String _userImageUrl = '';
-  Uint8List? _userImageBytes;
+
+  // Cloudinary configuration
+  final String _cloudName = 'dgc3hbhva';
+  final String _uploadPreset = 'uploads';
 
   final Map<String, Map<String, String>> _translations = {
     'add_patient_title': {'ar': 'إضافة مريض جديد', 'en': 'Add New Patient'},
@@ -57,9 +56,11 @@ class AddPatientPageState extends State<AddPatientPage> {
     'female': {'ar': 'أنثى', 'en': 'Female'},
     'phone': {'ar': 'رقم الهاتف', 'en': 'Phone Number'},
     'address': {'ar': 'مكان السكن', 'en': 'Address'},
-    'email': {'ar': 'البريد الإلكتروني', 'en': 'Email'},
     'add_patient_button': {'ar': 'إضافة المريض', 'en': 'Add Patient'},
-    'add_profile_photo': {'ar': 'إضافة صورة شخصية', 'en': 'Add Profile Photo'},
+    'add_id_photo': {'ar': 'إضافة صورة الهوية', 'en': 'Add ID Photo'},
+    'add_agreement_photo': {'ar': 'إضافة صورة الإقرار', 'en': 'Add Agreement Photo'},
+    'id_photo_title': {'ar': 'صورة الهوية', 'en': 'ID Photo'},
+    'agreement_photo_title': {'ar': 'صورة الإقرار', 'en': 'Agreement Photo'},
     'personal_info': {'ar': 'المعلومات الشخصية', 'en': 'Personal Information'},
     'contact_info': {'ar': 'معلومات التواصل', 'en': 'Contact Information'},
     'required_field': {'ar': '*', 'en': '*'},
@@ -76,13 +77,17 @@ class AddPatientPageState extends State<AddPatientPage> {
       'ar': 'رقم الهاتف يجب أن يكون 10 أرقام',
       'en': 'Phone must be 10 digits'
     },
-    'validation_email': {
-      'ar': 'البريد الإلكتروني غير صحيح',
-      'en': 'Invalid email format'
-    },
     'validation_gender': {
       'ar': 'الرجاء اختيار الجنس',
       'en': 'Please select gender'
+    },
+    'validation_id_image': {
+      'ar': 'صورة الهوية مطلوبة',
+      'en': 'ID image is required'
+    },
+    'validation_agreement_image': {
+      'ar': 'صورة الإقرار مطلوبة',
+      'en': 'Agreement image is required'
     },
     'add_success': {
       'ar': 'تمت إضافة المريض بنجاح',
@@ -96,9 +101,13 @@ class AddPatientPageState extends State<AddPatientPage> {
       'ar': 'حدث خطأ في تحميل الصورة',
       'en': 'Image upload error'
     },
+    'uploading_image': {
+      'ar': 'جاري رفع الصورة...',
+      'en': 'Uploading image...'
+    },
   };
 
-  String _translate(String key) {
+  String _translate(String key, BuildContext context) {
     final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
     final langCode = languageProvider.isEnglish ? 'en' : 'ar';
     if (_translations.containsKey(key)) {
@@ -115,7 +124,7 @@ class AddPatientPageState extends State<AddPatientPage> {
     }
   }
 
-  Future<void> _pickImage() async {
+  Future<void> _pickImage({required bool isId}) async {
     try {
       final XFile? image = await _picker.pickImage(
         source: ImageSource.gallery,
@@ -128,16 +137,28 @@ class AddPatientPageState extends State<AddPatientPage> {
         if (kIsWeb) {
           final bytes = await image.readAsBytes();
           if (!mounted) return;
-          setState(() => _patientImage = bytes);
+          setState(() {
+            if (isId) {
+              _idImage = bytes;
+            } else {
+              _agreementImage = bytes;
+            }
+          });
         } else {
           if (!mounted) return;
-          setState(() => _patientImage = File(image.path));
+          setState(() {
+            if (isId) {
+              _idImage = File(image.path);
+            } else {
+              _agreementImage = File(image.path);
+            }
+          });
         }
       }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${_translate('image_error')}: $e')),
+        SnackBar(content: Text('${_translate('image_error', context)}: $e')),
       );
     }
   }
@@ -165,14 +186,19 @@ class AddPatientPageState extends State<AddPatientPage> {
     }
   }
 
-  Future<String?> _uploadImageToRealtimeDB() async {
-    if (_patientImage == null) return null;
+  Future<String?> _uploadImageToCloudinary(dynamic image) async {
+    if (image == null) return null;
 
     try {
-      Uint8List imageBytes = kIsWeb
-          ? _patientImage as Uint8List
-          : await (_patientImage as File).readAsBytes();
+      Uint8List imageBytes;
+      
+      if (kIsWeb) {
+        imageBytes = image as Uint8List;
+      } else {
+        imageBytes = await (image as File).readAsBytes();
+      }
 
+      // Compress image first
       final compressedImage = await FlutterImageCompress.compressWithList(
         imageBytes,
         minWidth: 800,
@@ -180,15 +206,27 @@ class AddPatientPageState extends State<AddPatientPage> {
         quality: 70,
       );
 
-      if (compressedImage.lengthInBytes > 1 * 1024 * 1024) {
-        throw Exception('Image size exceeds 1MB limit');
-      }
+      var uri = Uri.parse('https://api.cloudinary.com/v1_1/$_cloudName/image/upload');
+      var request = http.MultipartRequest('POST', uri);
+      request.fields['upload_preset'] = _uploadPreset;
+      
+      request.files.add(
+        http.MultipartFile.fromBytes('file', compressedImage, filename: 'image.jpg'),
+      );
 
-      return base64Encode(compressedImage);
+      var response = await request.send();
+      final respStr = await response.stream.bytesToString();
+      
+      if (response.statusCode == 200) {
+        final jsonResp = jsonDecode(respStr);
+        return jsonResp['secure_url'];
+      } else {
+        throw Exception('Cloudinary upload failed: ${response.statusCode} - $respStr');
+      }
     } catch (e) {
       if (!mounted) return null;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${_translate('image_error')}: $e')),
+        SnackBar(content: Text('${_translate('image_error', context)}: $e')),
       );
       return null;
     }
@@ -200,7 +238,47 @@ class AddPatientPageState extends State<AddPatientPage> {
     if (_gender == null) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_translate('validation_gender'))),
+        SnackBar(content: Text(_translate('validation_gender', context))),
+      );
+      return;
+    }
+
+    if (_idImage == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_translate('validation_id_image', context))),
+      );
+      return;
+    }
+
+    if (_agreementImage == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_translate('validation_agreement_image', context))),
+      );
+      return;
+    }
+
+    final idNumber = _idNumberController.text.trim();
+    
+    // التحقق من وجود رقم الهوية
+    bool idExists = false;
+    try {
+      final checkResponse = await http.get(
+        Uri.parse('http://localhost:3000/patients/check-id/$idNumber')
+      );
+      if (checkResponse.statusCode == 200) {
+        final result = jsonDecode(checkResponse.body);
+        idExists = result['exists'] == true;
+      }
+    } catch (e) {
+      // تجاهل الخطأ والمتابعة
+    }
+    
+    if (idExists) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('رقم الهوية مسجل مسبقاً')),
       );
       return;
     }
@@ -208,66 +286,86 @@ class AddPatientPageState extends State<AddPatientPage> {
     setState(() => _isLoading = true);
 
     try {
-      String? imageBase64 = await _uploadImageToRealtimeDB();
-      String patientId = _database.push().key!;
+      // رفع الصور إلى Cloudinary
+      String? idImageUrl = await _uploadImageToCloudinary(_idImage);
+      String? agreementImageUrl = await _uploadImageToCloudinary(_agreementImage);
 
-      await _database.child('patients/$patientId').set({
+      if (idImageUrl == null || agreementImageUrl == null) {
+        throw Exception('فشل في رفع الصور');
+      }
+
+      final patientData = {
         'firstName': _firstNameController.text.trim(),
         'fatherName': _fatherNameController.text.trim(),
         'grandfatherName': _grandfatherNameController.text.trim(),
         'familyName': _familyNameController.text.trim(),
-        'idNumber': _idNumberController.text.trim(),
-        'birthDate': _birthDate?.millisecondsSinceEpoch,
+        'idNumber': idNumber,
+        'birthDate': _birthDate != null ? DateFormat('yyyy-MM-dd').format(_birthDate!) : null,
         'gender': _gender,
         'address': _addressController.text.trim(),
         'phone': _phoneController.text.trim(),
-        'email': _emailController.text.trim(),
-        'image': imageBase64,
-        'createdAt': ServerValue.timestamp,
+        'idImage': idImageUrl,
+        'agreementImage': agreementImageUrl,
         'status': 'active',
-        'patientId': patientId,
-      });
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_translate('add_success'))),
+        'createdAt': DateTime.now().toIso8601String(),
+      };
+      
+      final response = await http.post(
+        Uri.parse('http://localhost:3000/patients'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(patientData),
       );
-
-      _formKey.currentState!.reset();
-      setState(() {
-        _patientImage = null;
-        _birthDate = null;
-        _gender = null;
-      });
+      
+      if (response.statusCode == 201) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_translate('add_success', context))),
+        );
+        _resetForm();
+      } else {
+        throw Exception('خطأ في الخادم: ${response.statusCode}');
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${_translate('add_error')}: $e')),
+        SnackBar(content: Text('${_translate('add_error', context)}: $e')),
       );
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  Widget _buildImageWidget() {
-    if (_patientImage == null) {
+  void _resetForm() {
+    _formKey.currentState!.reset();
+    setState(() {
+      _idImage = null;
+      _agreementImage = null;
+      _birthDate = null;
+      _gender = null;
+    });
+  }
+
+  Widget _buildImageWidget({required bool isId, required BuildContext context}) {
+    final image = isId ? _idImage : _agreementImage;
+    if (image == null) {
       return Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(Icons.add_a_photo, size: 50, color: primaryColor),
           const SizedBox(height: 8),
           Text(
-            _translate('add_profile_photo'),
+            isId ? _translate('add_id_photo', context) : _translate('add_agreement_photo', context),
             style: TextStyle(color: primaryColor),
+            textAlign: TextAlign.center,
           ),
         ],
       );
     }
 
     return kIsWeb
-        ? Image.memory(_patientImage as Uint8List,
+        ? Image.memory(image as Uint8List,
             width: 150, height: 150, fit: BoxFit.cover)
-        : Image.file(_patientImage as File,
+        : Image.file(image as File,
             width: 150, height: 150, fit: BoxFit.cover);
   }
 
@@ -279,12 +377,15 @@ class AddPatientPageState extends State<AddPatientPage> {
     String? Function(String?)? validator,
     Widget? prefixIcon,
     int? maxLength,
+    List<TextInputFormatter>? inputFormatters,
+    required BuildContext context,
   }) {
     return TextFormField(
       controller: controller,
       keyboardType: keyboardType,
       obscureText: obscureText,
       maxLength: maxLength,
+      inputFormatters: inputFormatters,
       decoration: InputDecoration(
         labelText: labelText,
         labelStyle: TextStyle(color: primaryColor.withAlpha(204)),
@@ -306,17 +407,18 @@ class AddPatientPageState extends State<AddPatientPage> {
     );
   }
 
-  Widget _buildGenderRadioButtons() {
+  Widget _buildGenderRadioButtons(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
           padding: const EdgeInsets.only(bottom: 8.0),
           child: Text(
-            '${_translate('gender')} ${_translate('required_field')}',
-            style: TextStyle(
-              color: primaryColor.withAlpha(204),
-              fontSize: 16,
+            '${_translate('gender', context)} ${_translate('required_field', context)}',
+            style: const TextStyle(
+              color: Colors.black87,
+              fontSize: 17,
+              fontWeight: FontWeight.bold,
             ),
           ),
         ),
@@ -324,7 +426,7 @@ class AddPatientPageState extends State<AddPatientPage> {
           children: [
             Expanded(
               child: RadioListTile<String>(
-                title: Text(_translate('male')),
+                title: Text(_translate('male', context)),
                 value: 'male',
                 groupValue: _gender,
                 activeColor: primaryColor,
@@ -333,7 +435,7 @@ class AddPatientPageState extends State<AddPatientPage> {
             ),
             Expanded(
               child: RadioListTile<String>(
-                title: Text(_translate('female')),
+                title: Text(_translate('female', context)),
                 value: 'female',
                 groupValue: _gender,
                 activeColor: primaryColor,
@@ -353,46 +455,11 @@ class AddPatientPageState extends State<AddPatientPage> {
   }
 
   Future<void> _loadSecretaryData() async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    final snapshot = await _database.child('users/${user.uid}').get();
-    if (snapshot.exists) {
-      final data = snapshot.value as Map<dynamic, dynamic>;
-      final firstName = data['firstName']?.toString().trim() ?? '';
-      final fatherName = data['fatherName']?.toString().trim() ?? '';
-      final grandfatherName = data['grandfatherName']?.toString().trim() ?? '';
-      final familyName = data['familyName']?.toString().trim() ?? '';
-      final fullName = [firstName, fatherName, grandfatherName, familyName].where((e) => e.isNotEmpty).join(' ');
-      final imageData = data['image']?.toString() ?? '';
-      Uint8List? imageBytes;
-      if (imageData.isNotEmpty) {
-        try {
-          imageBytes = base64Decode(imageData.replaceFirst('data:image/jpeg;base64,', ''));
-        } catch (e) {
-          imageBytes = null;
-        }
-      }
-      setState(() {
-        _userName = fullName.isNotEmpty ? fullName : '';
-        _userImageUrl = imageData.isNotEmpty ? 'data:image/jpeg;base64,$imageData' : '';
-        _userImageBytes = imageBytes;
-      });
-    }
-  }
-
-  Widget? _buildSidebar(BuildContext context) {
-    return SecretarySidebar(
-      primaryColor: primaryColor,
-      accentColor: accentColor,
-      userName: _userName,
-      userImageUrl: (_userImageUrl.isNotEmpty && _userImageBytes != null) ? _userImageUrl : '',
-      onLogout: null,
-      parentContext: context,
-      collapsed: false,
-      translate: (ctx, key) => _translate(key),
-      pendingAccountsCount: 0,
-      userRole: 'secretary',
-    );
+    // هنا يمكنك جلب بيانات السكرتير من Provider أو SharedPreferences
+    // هذا مثال افتراضي
+    await Future.delayed(Duration.zero);
+    setState(() {
+    });
   }
 
   @override
@@ -405,7 +472,7 @@ class AddPatientPageState extends State<AddPatientPage> {
       child: Scaffold(
         backgroundColor: Colors.white,
         appBar: AppBar(
-          title: Text(_translate('add_patient_title')),
+          title: Text(_translate('add_patient_title', context)),
           backgroundColor: primaryColor,
           foregroundColor: Colors.white,
           actions: [
@@ -417,289 +484,606 @@ class AddPatientPageState extends State<AddPatientPage> {
             ),
           ],
         ),
-        drawer: _buildSidebar(context),
-        body: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              children: [
-                GestureDetector(
-                  onTap: _pickImage,
-                  child: Container(
-                    width: 150,
-                    height: 150,
-                    decoration: BoxDecoration(
-                      color: Colors.grey[100],
-                      border: Border.all(color: primaryColor),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: _buildImageWidget(),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 30),
-
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.grey.shade300),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Column(
-                    children: [
-                      Text(
-                        _translate('personal_info'),
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildTextFormField(
-                              controller: _firstNameController,
-                              labelText:
-                                  '${_translate('first_name')} ${_translate('required_field')}',
-                              prefixIcon:
-                                  Icon(Icons.person, color: accentColor),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return _translate('validation_required');
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _buildTextFormField(
-                              controller: _fatherNameController,
-                              labelText:
-                                  '${_translate('father_name')} ${_translate('required_field')}',
-                              prefixIcon:
-                                  Icon(Icons.person, color: accentColor),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return _translate('validation_required');
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 15),
-
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildTextFormField(
-                              controller: _grandfatherNameController,
-                              labelText:
-                                  '${_translate('grandfather_name')} ${_translate('required_field')}',
-                              prefixIcon:
-                                  Icon(Icons.person, color: accentColor),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return _translate('validation_required');
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _buildTextFormField(
-                              controller: _familyNameController,
-                              labelText:
-                                  '${_translate('family_name')} ${_translate('required_field')}',
-                              prefixIcon:
-                                  Icon(Icons.person, color: accentColor),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return _translate('validation_required');
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 15),
-
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildTextFormField(
-                              controller: _idNumberController,
-                              labelText:
-                                  '${_translate('id_number')} ${_translate('required_field')}',
-                              keyboardType: TextInputType.number,
-                              maxLength: 9,
-                              prefixIcon:
-                                  Icon(Icons.credit_card, color: accentColor),
-                              validator: (value) {
-                                if (value == null || value.isEmpty) {
-                                  return _translate('validation_required');
-                                }
-                                if (value.length < 9) {
-                                  return _translate('validation_id_length');
-                                }
-                                return null;
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: InkWell(
-                              onTap: _selectBirthDate,
-                              child: InputDecorator(
-                                decoration: InputDecoration(
-                                  labelText:
-                                      '${_translate('birth_date')} ${_translate('required_field')}',
-                                  labelStyle: TextStyle(
-                                      color: primaryColor.withAlpha(204)),
-                                  prefixIcon: Icon(Icons.calendar_today,
-                                      color: accentColor),
-                                  filled: true,
-                                  fillColor: Colors.grey[50],
-                                  border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(10),
-                                    borderSide:
-                                        BorderSide(color: Colors.grey.shade300),
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            final isWide = constraints.maxWidth > 700;
+            final double horizontalPadding = isWide ? constraints.maxWidth * 0.15 : 16;
+            
+            return SingleChildScrollView(
+              padding: EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: 24),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    // Images Row - الهوية والإقرار فقط
+                    isWide
+                        ? Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              // صورة الهوية
+                              Column(
+                                children: [
+                                  GestureDetector(
+                                    onTap: () => _pickImage(isId: true),
+                                    child: Container(
+                                      width: 170,
+                                      height: 170,
+                                      margin: const EdgeInsets.symmetric(horizontal: 16),
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey[100],
+                                        border: Border.all(color: primaryColor),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: _buildImageWidget(isId: true, context: context),
+                                      ),
+                                    ),
                                   ),
-                                  contentPadding: const EdgeInsets.symmetric(
-                                      vertical: 16, horizontal: 16),
-                                ),
-                                child: Text(
-                                  _birthDate == null
-                                      ? _translate('select_date')
-                                      : DateFormat('yyyy-MM-dd')
-                                          .format(_birthDate!),
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    color: _birthDate == null
-                                        ? Colors.grey[600]
-                                        : Colors.black,
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    _translate('id_photo_title', context),
+                                    style: TextStyle(
+                                      color: primaryColor,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
                                   ),
-                                ),
+                                ],
                               ),
-                            ),
+                              // صورة الإقرار
+                              Column(
+                                children: [
+                                  GestureDetector(
+                                    onTap: () => _pickImage(isId: false),
+                                    child: Container(
+                                      width: 170,
+                                      height: 170,
+                                      margin: const EdgeInsets.symmetric(horizontal: 16),
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey[100],
+                                        border: Border.all(color: primaryColor),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(12),
+                                        child: _buildImageWidget(isId: false, context: context),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    _translate('agreement_photo_title', context),
+                                    style: TextStyle(
+                                      color: primaryColor,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          )
+                        : Column(
+                            children: [
+                              // صورة الهوية
+                              Column(
+                                children: [
+                                  GestureDetector(
+                                    onTap: () => _pickImage(isId: true),
+                                    child: Container(
+                                      width: 150,
+                                      height: 150,
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey[100],
+                                        border: Border.all(color: primaryColor),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(10),
+                                        child: _buildImageWidget(isId: true, context: context),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    _translate('id_photo_title', context),
+                                    style: TextStyle(
+                                      color: primaryColor,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 20),
+                              // صورة الإقرار
+                              Column(
+                                children: [
+                                  GestureDetector(
+                                    onTap: () => _pickImage(isId: false),
+                                    child: Container(
+                                      width: 150,
+                                      height: 150,
+                                      decoration: BoxDecoration(
+                                        color: Colors.grey[100],
+                                        border: Border.all(color: primaryColor),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.circular(10),
+                                        child: _buildImageWidget(isId: false, context: context),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    _translate('agreement_photo_title', context),
+                                    style: TextStyle(
+                                      color: primaryColor,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                      const SizedBox(height: 15),
+                    const SizedBox(height: 30),
 
-                      _buildGenderRadioButtons(),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 20),
-
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Colors.grey.shade300),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Column(
-                    children: [
-                      Text(
-                        _translate('contact_info'),
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                        ),
-                      ),
-                      const SizedBox(height: 20),
-
-                      _buildTextFormField(
-                        controller: _phoneController,
-                        labelText:
-                            '${_translate('phone')} ${_translate('required_field')}',
-                        keyboardType: TextInputType.phone,
-                        maxLength: 10,
-                        prefixIcon: Icon(Icons.phone, color: accentColor),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return _translate('validation_required');
-                          }
-                          if (value.length < 10) {
-                            return _translate('validation_phone_length');
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 15),
-
-                      _buildTextFormField(
-                        controller: _addressController,
-                        labelText:
-                            '${_translate('address')} ${_translate('required_field')}',
-                        prefixIcon: Icon(Icons.location_on, color: accentColor),
-                        validator: (value) {
-                          if (value == null || value.isEmpty) {
-                            return _translate('validation_required');
-                          }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 15),
-
-                      _buildTextFormField(
-                        controller: _emailController,
-                        labelText: _translate('email'),
-                        keyboardType: TextInputType.emailAddress,
-                        prefixIcon: Icon(Icons.email, color: accentColor),
-                        validator: (value) {
-                          if (value != null &&
-                              value.isNotEmpty &&
-                              !value.contains('@')) {
-                            return _translate('validation_email');
-                          }
-                          return null;
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 30),
-
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _isLoading ? null : _addPatient,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: primaryColor,
-                      padding: const EdgeInsets.symmetric(vertical: 18),
-                      shape: RoundedRectangleBorder(
+                    // المعلومات الشخصية
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade300),
                         borderRadius: BorderRadius.circular(10),
                       ),
-                    ),
-                    child: _isLoading
-                        ? const CircularProgressIndicator(color: Colors.white)
-                        : Text(
-                            _translate('add_patient_button'),
+                      child: Column(
+                        children: [
+                          Text(
+                            _translate('personal_info', context),
                             style: const TextStyle(
                               fontSize: 18,
-                              color: Colors.white,
                               fontWeight: FontWeight.bold,
+                              color: Colors.black87,
                             ),
                           ),
-                  ),
+                          const SizedBox(height: 20),
+
+                          // الصف الأول: الاسم الأول واسم الأب
+                          isWide
+                              ? Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      child: SizedBox(
+                                        height: 60,
+                                        child: _buildTextFormField(
+                                          controller: _firstNameController,
+                                          labelText: '${_translate('first_name', context)} ${_translate('required_field', context)}',
+                                          prefixIcon: Icon(Icons.person, color: accentColor),
+                                          validator: (value) {
+                                            if (value == null || value.isEmpty) {
+                                              return _translate('validation_required', context);
+                                            }
+                                            return null;
+                                          },
+                                          context: context,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Expanded(
+                                      child: SizedBox(
+                                        height: 60,
+                                        child: _buildTextFormField(
+                                          controller: _fatherNameController,
+                                          labelText: '${_translate('father_name', context)} ${_translate('required_field', context)}',
+                                          prefixIcon: Icon(Icons.person, color: accentColor),
+                                          validator: (value) {
+                                            if (value == null || value.isEmpty) {
+                                              return _translate('validation_required', context);
+                                            }
+                                            return null;
+                                          },
+                                          context: context,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Column(
+                                  children: [
+                                    SizedBox(
+                                      height: 60,
+                                      child: _buildTextFormField(
+                                        controller: _firstNameController,
+                                        labelText: '${_translate('first_name', context)} ${_translate('required_field', context)}',
+                                        prefixIcon: Icon(Icons.person, color: accentColor),
+                                        validator: (value) {
+                                          if (value == null || value.isEmpty) {
+                                            return _translate('validation_required', context);
+                                          }
+                                          return null;
+                                        },
+                                        context: context,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      height: 60,
+                                      child: _buildTextFormField(
+                                        controller: _fatherNameController,
+                                        labelText: '${_translate('father_name', context)} ${_translate('required_field', context)}',
+                                        prefixIcon: Icon(Icons.person, color: accentColor),
+                                        validator: (value) {
+                                          if (value == null || value.isEmpty) {
+                                            return _translate('validation_required', context);
+                                          }
+                                          return null;
+                                        },
+                                        context: context,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                          const SizedBox(height: 15),
+
+                          // الصف الثاني: اسم الجد واسم العائلة
+                          isWide
+                              ? Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      child: SizedBox(
+                                        height: 60,
+                                        child: _buildTextFormField(
+                                          controller: _grandfatherNameController,
+                                          labelText: '${_translate('grandfather_name', context)} ${_translate('required_field', context)}',
+                                          prefixIcon: Icon(Icons.person, color: accentColor),
+                                          validator: (value) {
+                                            if (value == null || value.isEmpty) {
+                                              return _translate('validation_required', context);
+                                            }
+                                            return null;
+                                          },
+                                          context: context,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Expanded(
+                                      child: SizedBox(
+                                        height: 60,
+                                        child: _buildTextFormField(
+                                          controller: _familyNameController,
+                                          labelText: '${_translate('family_name', context)} ${_translate('required_field', context)}',
+                                          prefixIcon: Icon(Icons.person, color: accentColor),
+                                          validator: (value) {
+                                            if (value == null || value.isEmpty) {
+                                              return _translate('validation_required', context);
+                                            }
+                                            return null;
+                                          },
+                                          context: context,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Column(
+                                  children: [
+                                    SizedBox(
+                                      height: 60,
+                                      child: _buildTextFormField(
+                                        controller: _grandfatherNameController,
+                                        labelText: '${_translate('grandfather_name', context)} ${_translate('required_field', context)}',
+                                        prefixIcon: Icon(Icons.person, color: accentColor),
+                                        validator: (value) {
+                                          if (value == null || value.isEmpty) {
+                                            return _translate('validation_required', context);
+                                          }
+                                          return null;
+                                        },
+                                        context: context,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      height: 60,
+                                      child: _buildTextFormField(
+                                        controller: _familyNameController,
+                                        labelText: '${_translate('family_name', context)} ${_translate('required_field', context)}',
+                                        prefixIcon: Icon(Icons.person, color: accentColor),
+                                        validator: (value) {
+                                          if (value == null || value.isEmpty) {
+                                            return _translate('validation_required', context);
+                                          }
+                                          return null;
+                                        },
+                                        context: context,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                          const SizedBox(height: 15),
+
+                          // الصف الثالث: رقم الهوية وتاريخ الميلاد
+                          isWide
+                              ? Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      child: SizedBox(
+                                        height: 60,
+                                        child: _buildTextFormField(
+                                          controller: _idNumberController,
+                                          labelText: '${_translate('id_number', context)} ${_translate('required_field', context)}',
+                                          keyboardType: TextInputType.number,
+                                          maxLength: 9,
+                                          prefixIcon: Icon(Icons.credit_card, color: accentColor),
+                                          inputFormatters: [
+                                            FilteringTextInputFormatter.allow(RegExp(r'[0-9]'))
+                                          ],
+                                          validator: (value) {
+                                            if (value == null || value.isEmpty) {
+                                              return _translate('validation_required', context);
+                                            }
+                                            if (value.length < 9) {
+                                              return _translate('validation_id_length', context);
+                                            }
+                                            return null;
+                                          },
+                                          context: context,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Expanded(
+                                      child: SizedBox(
+                                        height: 60,
+                                        child: InkWell(
+                                          onTap: _selectBirthDate,
+                                          child: InputDecorator(
+                                            decoration: InputDecoration(
+                                              labelText: '${_translate('birth_date', context)} ${_translate('required_field', context)}',
+                                              labelStyle: TextStyle(color: primaryColor.withAlpha(204)),
+                                              prefixIcon: Icon(Icons.calendar_today, color: accentColor),
+                                              filled: true,
+                                              fillColor: Colors.grey[50],
+                                              border: OutlineInputBorder(
+                                                borderRadius: BorderRadius.circular(10),
+                                                borderSide: BorderSide(color: Colors.grey.shade300),
+                                              ),
+                                              contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+                                            ),
+                                            child: Text(
+                                              _birthDate == null
+                                                  ? _translate('select_date', context)
+                                                  : DateFormat('yyyy-MM-dd').format(_birthDate!),
+                                              style: TextStyle(
+                                                fontSize: 16,
+                                                color: _birthDate == null ? Colors.grey[600] : Colors.black,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Column(
+                                  children: [
+                                    SizedBox(
+                                      height: 60,
+                                      child: _buildTextFormField(
+                                        controller: _idNumberController,
+                                        labelText: '${_translate('id_number', context)} ${_translate('required_field', context)}',
+                                        keyboardType: TextInputType.number,
+                                        maxLength: 9,
+                                        prefixIcon: Icon(Icons.credit_card, color: accentColor),
+                                        inputFormatters: [
+                                          FilteringTextInputFormatter.allow(RegExp(r'[0-9]'))
+                                        ],
+                                        validator: (value) {
+                                          if (value == null || value.isEmpty) {
+                                            return _translate('validation_required', context);
+                                          }
+                                          if (value.length < 9) {
+                                            return _translate('validation_id_length', context);
+                                          }
+                                          return null;
+                                        },
+                                        context: context,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      height: 60,
+                                      child: InkWell(
+                                        onTap: _selectBirthDate,
+                                        child: InputDecorator(
+                                          decoration: InputDecoration(
+                                            labelText: '${_translate('birth_date', context)} ${_translate('required_field', context)}',
+                                            labelStyle: TextStyle(color: primaryColor.withAlpha(204)),
+                                            prefixIcon: Icon(Icons.calendar_today, color: accentColor),
+                                            filled: true,
+                                            fillColor: Colors.grey[50],
+                                            border: OutlineInputBorder(
+                                              borderRadius: BorderRadius.circular(10),
+                                              borderSide: BorderSide(color: Colors.grey.shade300),
+                                            ),
+                                            contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+                                          ),
+                                          child: Text(
+                                            _birthDate == null
+                                                ? _translate('select_date', context)
+                                                : DateFormat('yyyy-MM-dd').format(_birthDate!),
+                                            style: TextStyle(
+                                              fontSize: 16,
+                                              color: _birthDate == null ? Colors.grey[600] : Colors.black,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                          const SizedBox(height: 15),
+
+                          _buildGenderRadioButtons(context),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+
+                    // معلومات التواصل
+                    Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade300),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            _translate('contact_info', context),
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87,
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+
+                          isWide
+                              ? Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Expanded(
+                                      child: SizedBox(
+                                        height: 60,
+                                        child: _buildTextFormField(
+                                          controller: _phoneController,
+                                          labelText: '${_translate('phone', context)} ${_translate('required_field', context)}',
+                                          keyboardType: TextInputType.phone,
+                                          maxLength: 10,
+                                          prefixIcon: Icon(Icons.phone, color: accentColor),
+                                          inputFormatters: [
+                                            FilteringTextInputFormatter.allow(RegExp(r'[0-9]'))
+                                          ],
+                                          validator: (value) {
+                                            if (value == null || value.isEmpty) {
+                                              return _translate('validation_required', context);
+                                            }
+                                            if (value.length < 10) {
+                                              return _translate('validation_phone_length', context);
+                                            }
+                                            return null;
+                                          },
+                                          context: context,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 16),
+                                    Expanded(
+                                      child: SizedBox(
+                                        height: 60,
+                                        child: _buildTextFormField(
+                                          controller: _addressController,
+                                          labelText: '${_translate('address', context)} ${_translate('required_field', context)}',
+                                          prefixIcon: Icon(Icons.location_on, color: accentColor),
+                                          validator: (value) {
+                                            if (value == null || value.isEmpty) {
+                                              return _translate('validation_required', context);
+                                            }
+                                            return null;
+                                          },
+                                          context: context,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Column(
+                                  children: [
+                                    SizedBox(
+                                      height: 60,
+                                      child: _buildTextFormField(
+                                        controller: _phoneController,
+                                        labelText: '${_translate('phone', context)} ${_translate('required_field', context)}',
+                                        keyboardType: TextInputType.phone,
+                                        maxLength: 10,
+                                        prefixIcon: Icon(Icons.phone, color: accentColor),
+                                        inputFormatters: [
+                                          FilteringTextInputFormatter.allow(RegExp(r'[0-9]'))
+                                        ],
+                                        validator: (value) {
+                                          if (value == null || value.isEmpty) {
+                                            return _translate('validation_required', context);
+                                          }
+                                          if (value.length < 10) {
+                                            return _translate('validation_phone_length', context);
+                                          }
+                                          return null;
+                                        },
+                                        context: context,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    SizedBox(
+                                      height: 60,
+                                      child: _buildTextFormField(
+                                        controller: _addressController,
+                                        labelText: '${_translate('address', context)} ${_translate('required_field', context)}',
+                                        prefixIcon: Icon(Icons.location_on, color: accentColor),
+                                        validator: (value) {
+                                          if (value == null || value.isEmpty) {
+                                            return _translate('validation_required', context);
+                                          }
+                                          return null;
+                                        },
+                                        context: context,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 30),
+
+                    // زر إضافة المريض
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: _isLoading ? null : _addPatient,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: primaryColor,
+                          padding: const EdgeInsets.symmetric(vertical: 18),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        child: _isLoading
+                            ? const CircularProgressIndicator(color: Colors.white)
+                            : Text(
+                                _translate('add_patient_button', context),
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
                 ),
-                const SizedBox(height: 20),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         ),
       ),
     );
@@ -714,7 +1098,6 @@ class AddPatientPageState extends State<AddPatientPage> {
     _idNumberController.dispose();
     _addressController.dispose();
     _phoneController.dispose();
-    _emailController.dispose();
     super.dispose();
   }
 }

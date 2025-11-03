@@ -1,8 +1,10 @@
+  // ignore_for_file: library_private_types_in_public_api, use_build_context_synchronously
+// ignore: duplicate_ignore
 // ignore_for_file: library_private_types_in_public_api, use_build_context_synchronously
 
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_database/firebase_database.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import '../Student/student_sidebar.dart';
 
 class StudentAppointmentsPage extends StatefulWidget {
@@ -13,22 +15,83 @@ class StudentAppointmentsPage extends StatefulWidget {
 }
 
 class _StudentAppointmentsPageState extends State<StudentAppointmentsPage> {
+  // قائمة العيادات الخارجية المتاحة (A-K بدون F)
+  final List<String> outpatientClinics = [
+    'A',
+    'B',
+    'C',
+    'D',
+    'E',
+    'G',
+    'H',
+    'I',
+    'J',
+    'K',
+  ];
+  String? selectedOutpatientClinic;
+  // لا حاجة لمراجع Firebase
+
+  // إضافة موعد للعيادات الخارجية (مفصول)
+  Future<void> _addOutpatientAppointment() async {
+    setState(() { _isLoading = true; });
+    try {
+      final appointmentData = {
+        'date': selectedDate?.toIso8601String(),
+        'start': startTime?.format(context),
+        'end': endTime?.format(context),
+        'patientUid': selectedPatientUid,
+        'patientName': selectedPatientName,
+        'clinic': selectedOutpatientClinic,
+        'studentId': 'dummyStudentId', // استبدلها بالمعرف الحقيقي للطالب إذا توفر
+      };
+      final url = Uri.parse('http://localhost:3000/outpatientAppointments');
+      final response = await http.post(url, body: json.encode(appointmentData), headers: {'Content-Type': 'application/json'});
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        setState(() {
+          selectedDate = null;
+          startTime = null;
+          endTime = null;
+          selectedPatientName = '';
+          selectedPatientUid = '';
+          selectedOutpatientClinic = null;
+          _patientController.clear();
+          _isLoading = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'تم حجز موعد للعيادات الخارجية بنجاح' : 'Outpatient appointment booked successfully'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+        await _fetchOutpatientAppointments();
+      } else {
+        throw Exception('API error: ${response.body}');
+      }
+    } catch (e) {
+      setState(() { _isLoading = false; });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('خطأ في الحجز: $e')),
+      );
+    }
+  }
   DateTime? selectedDate;
   TimeOfDay? startTime;
   TimeOfDay? endTime;
-  List<Map<String, dynamic>> appointments = [];
-  final _auth = FirebaseAuth.instance;
-  final DatabaseReference _appointmentsRef = FirebaseDatabase.instance.ref('appointments');
+  List<Map<String, dynamic>> appointments = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> outpatientAppointments = <Map<String, dynamic>>[];
+  // لا حاجة لمراجع Firebase
   bool _isLoading = false;
   String diseaseName = '';
   List<String> allDiseases = [];
   List<String> filteredDiseases = [];
-  final DatabaseReference _usersRef = FirebaseDatabase.instance.ref('users');
+  // لا حاجة لمراجع Firebase
   String selectedPatientName = '';
   String selectedPatientUid = '';
   List<Map<String, String>> allPatients = [];
-  List<Map<String, String>> filteredPatients = [];
+  List<Map<String, String>> allPendingPatients = [];
+  bool _isPendingPatient = false;
   final TextEditingController _patientController = TextEditingController();
+  bool _patientNotFound = false;
   String? _studentName;
   String? _studentImageUrl;
 
@@ -39,14 +102,40 @@ class _StudentAppointmentsPageState extends State<StudentAppointmentsPage> {
     _fetchPatients();
     _fetchDiseases();
     _fetchStudentAppointments();
+    _fetchOutpatientAppointments();
+  }
+
+  Future<void> _fetchOutpatientAppointments() async {
+    // استبدل userId بقيمة الطالب الحقيقية إذا توفر
+    const userId = 'dummyStudentId';
+    final url = Uri.parse('http://localhost:3000/outpatientAppointments?studentId=$userId');
+    final response = await http.get(url);
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      final List<Map<String, dynamic>> loadedAppointments = data.cast<Map<String, dynamic>>();
+      loadedAppointments.sort((a, b) {
+        final dateA = DateTime.parse(a['date']);
+        final dateB = DateTime.parse(b['date']);
+        if (dateA != dateB) {
+          return dateA.compareTo(dateB);
+        }
+        final timeA = a['start'];
+        final timeB = b['start'];
+        return timeA.compareTo(timeB);
+      });
+      setState(() {
+        outpatientAppointments = loadedAppointments;
+      });
+    }
   }
 
   Future<void> _fetchStudentInfo() async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    final snapshot = await _usersRef.child(user.uid).get();
-    if (snapshot.exists) {
-      final data = Map<String, dynamic>.from(snapshot.value as Map);
+    // استبدل userId بقيمة الطالب الحقيقية إذا توفر
+    const userId = 'dummyStudentId';
+    final url = Uri.parse('http://localhost:3000/users/$userId');
+    final response = await http.get(url);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
       final firstName = data['firstName'] ?? '';
       final fatherName = data['fatherName'] ?? '';
       final grandfatherName = data['grandfatherName'] ?? '';
@@ -62,38 +151,62 @@ class _StudentAppointmentsPageState extends State<StudentAppointmentsPage> {
   }
 
   Future<void> _fetchPatients() async {
-    final snapshot = await _usersRef.get();
+    final url = Uri.parse('http://localhost:3000/users?role=patient');
+    final response = await http.get(url);
     final List<Map<String, String>> patients = [];
-    if (snapshot.exists) {
-      final data = snapshot.value as Map<dynamic, dynamic>;
-      data.forEach((key, value) {
-        if (value is Map && value['firstName'] != null && value['role'] == 'patient') {
-          final fullName = [
-            value['firstName'],
-            value['fatherName'],
-            value['grandfatherName'],
-            value['familyName']
-          ].where((e) => e != null && e.toString().isNotEmpty).join(' ');
-          patients.add({'uid': key.toString(), 'name': fullName});
-        }
-      });
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as List;
+      for (final item in data) {
+        final fullName = [
+          item['firstName'],
+          item['fatherName'],
+          item['grandfatherName'],
+          item['familyName']
+        ].where((e) => e != null && e.toString().isNotEmpty).join(' ');
+        patients.add({
+          'uid': item['uid'].toString(),
+          'name': fullName,
+          'idNumber': item['idNumber'].toString(),
+        });
+      }
+    }
+    // Fetch pending patients
+    final pendingUrl = Uri.parse('http://localhost:3000/pendingUsers?role=patient');
+    final pendingResp = await http.get(pendingUrl);
+    final List<Map<String, String>> pendingPatients = [];
+    if (pendingResp.statusCode == 200) {
+      final data = json.decode(pendingResp.body) as List;
+      for (final item in data) {
+        final fullName = [
+          item['firstName'],
+          item['fatherName'],
+          item['grandfatherName'],
+          item['familyName']
+        ].where((e) => e != null && e.toString().isNotEmpty).join(' ');
+        pendingPatients.add({
+          'uid': item['uid'].toString(),
+          'name': fullName,
+          'idNumber': item['idNumber'].toString(),
+        });
+      }
     }
     setState(() {
       allPatients = patients;
-      filteredPatients = patients;
+      allPendingPatients = pendingPatients;
     });
   }
 
   Future<void> _fetchDiseases() async {
-    final snapshot = await _usersRef.get();
+    final url = Uri.parse('http://localhost:3000/users?diseaseName=exists');
+    final response = await http.get(url);
     final Set<String> diseasesSet = {};
-    if (snapshot.exists) {
-      final data = snapshot.value as Map<dynamic, dynamic>;
-      data.forEach((key, value) {
-        if (value is Map && value['diseaseName'] != null && value['diseaseName'].toString().isNotEmpty) {
-          diseasesSet.add(value['diseaseName'].toString());
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body) as List;
+      for (final item in data) {
+        if (item['diseaseName'] != null && item['diseaseName'].toString().isNotEmpty) {
+          diseasesSet.add(item['diseaseName'].toString());
         }
-      });
+      }
     }
     setState(() {
       allDiseases = diseasesSet.toList();
@@ -102,65 +215,70 @@ class _StudentAppointmentsPageState extends State<StudentAppointmentsPage> {
   }
 
   Future<void> _fetchStudentAppointments() async {
-    final user = _auth.currentUser;
-    if (user == null) return;
-    final snapshot = await _appointmentsRef.orderByChild('studentId').equalTo(user.uid).get();
-    final List<Map<String, dynamic>> loadedAppointments = [];
-    if (snapshot.exists) {
-      final data = snapshot.value as Map<dynamic, dynamic>;
-      data.forEach((key, value) {
-        if (value is Map) {
-          final appt = Map<String, dynamic>.from(value);
-          appt['key'] = key; // حفظ key مع كل موعد
-          loadedAppointments.add(appt);
+    // استبدل userId بقيمة الطالب الحقيقية إذا توفر
+    const userId = 'dummyStudentId';
+    final url = Uri.parse('http://localhost:3000/appointments?studentId=$userId');
+    final response = await http.get(url);
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      final List<Map<String, dynamic>> loadedAppointments = data.cast<Map<String, dynamic>>();
+      loadedAppointments.sort((a, b) {
+        final dateA = DateTime.parse(a['date']);
+        final dateB = DateTime.parse(b['date']);
+        if (dateA != dateB) {
+          return dateA.compareTo(dateB);
         }
+        final timeA = a['start'];
+        final timeB = b['start'];
+        return timeA.compareTo(timeB);
+      });
+      setState(() {
+        appointments = loadedAppointments;
       });
     }
-    loadedAppointments.sort((a, b) {
-      final dateA = DateTime.parse(a['date']);
-      final dateB = DateTime.parse(b['date']);
-      if (dateA != dateB) {
-        return dateA.compareTo(dateB);
-      }
-      final timeA = a['start'];
-      final timeB = b['start'];
-      return timeA.compareTo(timeB);
-    });
-    setState(() {
-      appointments = loadedAppointments;
-    });
   }
 
   Future<void> _deleteAppointment(String key) async {
-    await _appointmentsRef.child(key).remove();
+    final url = Uri.parse('http://localhost:3000/appointments/$key');
+    await http.delete(url);
     await _fetchStudentAppointments();
+    await _fetchOutpatientAppointments();
   }
 
 
+  // إضافة موعد للفحص الأولي (مفصول)
   void _addAppointment() async {
-    if (selectedDate != null && startTime != null && endTime != null && selectedPatientUid.isNotEmpty) {
-      setState(() { _isLoading = true; });
-      final user = _auth.currentUser;
-      final appointment = {
-        'date': selectedDate!.toIso8601String(),
-        'start': startTime!.format(context),
-        'end': endTime!.format(context),
-        'studentId': user?.uid,
-        'studentEmail': user?.email,
+    setState(() { _isLoading = true; });
+    try {
+      final appointmentData = {
+        'date': selectedDate?.toIso8601String(),
+        'start': startTime?.format(context),
+        'end': endTime?.format(context),
         'patientUid': selectedPatientUid,
         'patientName': selectedPatientName,
+        'studentId': 'dummyStudentId', // استبدلها بالمعرف الحقيقي للطالب إذا توفر
       };
-      await _appointmentsRef.push().set(appointment);
-      await _fetchStudentAppointments();
-      setState(() {
-        selectedDate = null;
-        startTime = null;
-        endTime = null;
-        selectedPatientName = '';
-        selectedPatientUid = '';
-        _patientController.clear();
-        _isLoading = false;
-      });
+      final url = Uri.parse('http://localhost:3000/appointments');
+      final response = await http.post(url, body: json.encode(appointmentData), headers: {'Content-Type': 'application/json'});
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        await _fetchStudentAppointments();
+        setState(() {
+          selectedDate = null;
+          startTime = null;
+          endTime = null;
+          selectedPatientName = '';
+          selectedPatientUid = '';
+          _patientController.clear();
+          _isLoading = false;
+        });
+      } else {
+        throw Exception('API error: ${response.body}');
+      }
+    } catch (e) {
+      setState(() { _isLoading = false; });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('خطأ في الحجز: $e')),
+      );
     }
   }
 
@@ -204,6 +322,12 @@ class _StudentAppointmentsPageState extends State<StudentAppointmentsPage> {
         elevation: 2,
       ),
       drawer: StudentSidebar(
+        allowedFeatures: <String>[
+  'view_examinations',
+  'add_patient',
+  'upload_xray',
+  'my_appointments',
+],
         studentName: _studentName,
         studentImageUrl: _studentImageUrl,
       ),
@@ -235,35 +359,82 @@ class _StudentAppointmentsPageState extends State<StudentAppointmentsPage> {
                     const SizedBox(height: 18),
                     TextField(
                       controller: _patientController,
+                      keyboardType: TextInputType.number,
                       decoration: InputDecoration(
-                        labelText: Localizations.localeOf(context).languageCode == 'ar' ? 'ابحث عن اسم المريض' : 'Search for patient name',
+                        labelText: Localizations.localeOf(context).languageCode == 'ar' ? 'أدخل رقم هوية المريض' : 'Enter patient ID number',
                         prefixIcon: const Icon(Icons.search),
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
                       ),
                       onChanged: (value) {
                         setState(() {
-                          selectedPatientName = value;
+                          selectedPatientName = '';
                           selectedPatientUid = '';
-                          filteredPatients = allPatients.where((p) => p['name']!.contains(value)).toList();
+                          _patientNotFound = false;
+                          _isPendingPatient = false;
                         });
+                        if (value.isNotEmpty) {
+                          final patient = allPatients.firstWhere(
+                            (p) => p['idNumber'] == value,
+                            orElse: () => {},
+                          );
+                          if (patient.isNotEmpty) {
+                            setState(() {
+                              selectedPatientName = patient['name'] ?? '';
+                              selectedPatientUid = patient['uid'] ?? '';
+                              _patientNotFound = false;
+                              _isPendingPatient = false;
+                            });
+                            return;
+                          }
+                          // Check pending patients
+                          final pendingPatient = allPendingPatients.firstWhere(
+                            (p) => p['idNumber'] == value,
+                            orElse: () => {},
+                          );
+                          if (pendingPatient.isNotEmpty) {
+                            setState(() {
+                              selectedPatientName = pendingPatient['name'] ?? '';
+                              selectedPatientUid = pendingPatient['uid'] ?? '';
+                              _patientNotFound = false;
+                              _isPendingPatient = true;
+                            });
+                            return;
+                          }
+                          setState(() {
+                            _patientNotFound = true;
+                            _isPendingPatient = false;
+                          });
+                        }
                       },
                     ),
-                    if (selectedPatientName.isNotEmpty && filteredPatients.isNotEmpty)
-                      Container(
-                        constraints: const BoxConstraints(maxHeight: 150),
-                        child: ListView(
-                          shrinkWrap: true,
-                          children: filteredPatients.map((p) => ListTile(
-                            title: Text(p['name']!),
-                            onTap: () {
-                              setState(() {
-                                selectedPatientName = p['name']!;
-                                selectedPatientUid = p['uid']!;
-                                _patientController.text = p['name']!;
-                                filteredPatients = [];
-                              });
-                            },
-                          )).toList(),
+                    if (selectedPatientName.isNotEmpty && !_patientNotFound && !_isPendingPatient)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Text(
+                          Localizations.localeOf(context).languageCode == 'ar'
+                              ? 'اسم المريض: $selectedPatientName'
+                              : 'Patient Name: $selectedPatientName',
+                          style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    if (selectedPatientName.isNotEmpty && _isPendingPatient)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Text(
+                          Localizations.localeOf(context).languageCode == 'ar'
+                              ? 'اسم المريض: $selectedPatientName (تحت الموافقة)'
+                              : 'Patient Name: $selectedPatientName (Pending Approval)',
+                          style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    if (_patientNotFound)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Text(
+                          Localizations.localeOf(context).languageCode == 'ar'
+                              ? 'رقم الهوية غير موجود. يرجى إنشاء حساب للمريض.'
+                              : 'ID number not found. Please create an account for the patient.',
+                          style: const TextStyle(color: Colors.red),
                         ),
                       ),
                     const SizedBox(height: 18),
@@ -349,100 +520,315 @@ class _StudentAppointmentsPageState extends State<StudentAppointmentsPage> {
                     const SizedBox(height: 18),
                     _isLoading
                         ? const Center(child: CircularProgressIndicator())
-                        : ElevatedButton.icon(
-                            icon: const Icon(Icons.add, color: Colors.white),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFF2A7A94),
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              textStyle: TextStyle(fontSize: isTablet ? 18 : 16, color: Colors.white),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                            ),
-                            onPressed: _addAppointment,
-                            label: Text(
-                              Localizations.localeOf(context).languageCode == 'ar' ? 'إضافة الموعد' : 'Add Appointment',
-                              style: const TextStyle(color: Colors.white),
-                            ),
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              ElevatedButton.icon(
+                                icon: const Icon(Icons.add, color: Colors.white),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF2A7A94),
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  textStyle: TextStyle(fontSize: isTablet ? 18 : 16, color: Colors.white),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                ),
+                                onPressed: _addAppointment,
+                                label: Text(
+                                  Localizations.localeOf(context).languageCode == 'ar' ? 'إضافة الموعد للفحص الأولي' : 'Add Primary Exam Appointment',
+                                  style: const TextStyle(color: Colors.white),
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              // اختيار العيادة للعيادات الخارجية
+                              DropdownButtonFormField<String>(
+                                initialValue: selectedOutpatientClinic,
+                                decoration: InputDecoration(
+                                  labelText: Localizations.localeOf(context).languageCode == 'ar'
+                                      ? 'اختر العيادة الخارجية'
+                                      : 'Select Outpatient Clinic',
+                                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                                ),
+                                items: outpatientClinics
+                                    .map((clinic) => DropdownMenuItem<String>(
+                                          value: clinic,
+                                          child: Text(clinic),
+                                        ))
+                                    .toList(),
+                                onChanged: (val) {
+                                  setState(() {
+                                    selectedOutpatientClinic = val;
+                                  });
+                                },
+                                validator: (val) {
+                                  if (val == null || val.isEmpty) {
+                                    return Localizations.localeOf(context).languageCode == 'ar'
+                                        ? 'يرجى اختيار العيادة'
+                                        : 'Please select a clinic';
+                                  }
+                                  return null;
+                                },
+                              ),
+                              const SizedBox(height: 10),
+                              ElevatedButton.icon(
+                                icon: const Icon(Icons.local_hospital, color: Colors.white),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green[700],
+                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  textStyle: TextStyle(fontSize: isTablet ? 18 : 16, color: Colors.white),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                ),
+                                onPressed: _addOutpatientAppointment,
+                                label: Text(
+                                  Localizations.localeOf(context).languageCode == 'ar' ? 'حجز للعيادات الخارجية' : 'Book Outpatient Appointment',
+                                  style: const TextStyle(color: Colors.white),
+                                ),
+                              ),
+                            ],
                           ),
                   ],
                 ),
               ),
             ),
             const SizedBox(height: 28),
-            Text(
-              Localizations.localeOf(context).languageCode == 'ar' ? 'جميع مواعيدي' : 'All My Appointments',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: isTablet ? 20 : 16,
-                color: Colors.black87, // لون مريح للعين
-              ),
-            ),
-            const SizedBox(height: 10),
-            appointments.isEmpty
-                ? const Center(child: Text('لا يوجد مواعيد'))
-                : ListView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    itemCount: appointments.length,
-                    itemBuilder: (context, index) {
-                      final appt = appointments[index];
-                      return Card(
-                        margin: const EdgeInsets.symmetric(vertical: 6),
-                        elevation: 2,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        child: ListTile(
-                          leading: const CircleAvatar(
-                            backgroundColor: Color(0xFF4AB8D8),
-                            child: Icon(Icons.calendar_today, color: Colors.white),
-                          ),
-                          title: Text(
-                            (Localizations.localeOf(context).languageCode == 'ar' ? 'اليوم: ' : 'Day: ') + DateTime.parse(appt['date']).toLocal().toString().split(' ')[0]),
-                          subtitle: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text("${Localizations.localeOf(context).languageCode == 'ar' ? 'من: ' : 'From: '}${appt['start']}"),
-                              Text("${Localizations.localeOf(context).languageCode == 'ar' ? 'إلى: ' : 'To: '}${appt['end']}"),
-                              Text((Localizations.localeOf(context).languageCode == 'ar' ? 'المريض: ' : 'Patient: ') + (appt['patientName'] ?? '')),
-                            ],
-                          ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.red),
-                            tooltip: 'حذف الموعد',
-                            onPressed: () async {
-                              final key = appt['key'];
-                              if (key != null) {
-                                final confirm = await showDialog<bool>(
-                                  context: context,
-                                  builder: (context) => AlertDialog(
-                                    title: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'تأكيد الحذف' : 'Confirm Deletion'),
-                                    content: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'هل أنت متأكد أنك تريد حذف هذا الموعد؟' : 'Are you sure you want to delete this appointment?'),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.of(context).pop(false),
-                                        child: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'لا' : 'No'),
-                                      ),
-                                      TextButton(
-                                        onPressed: () => Navigator.of(context).pop(true),
-                                        child: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'نعم' : 'Yes'),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                                if (confirm == true) {
-                                  await _deleteAppointment(key);
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'تم حذف الموعد بنجاح' : 'Appointment deleted successfully'),
-                                      duration: const Duration(seconds: 2),
-                                    ),
-                                  );
-                                }
-                              }
-                            },
+            LayoutBuilder(
+              builder: (context, constraints) {
+                // إذا الشاشة صغيرة (موبايل) اعرضهم فوق بعض، إذا كبيرة اعرضهم جنب بعض
+                final isWide = constraints.maxWidth > 700;
+                final children = [
+                  // قائمة الفحص الأولي
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          Localizations.localeOf(context).languageCode == 'ar' ? 'مواعيد الفحص الأولي' : 'Primary Exam Appointments',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: isTablet ? 18 : 15,
+                            color: Colors.blue[900],
                           ),
                         ),
-                      );
-                    },
+                        const SizedBox(height: 8),
+                        Builder(
+                          builder: (context) {
+                            if (appointments.isEmpty) {
+                              return const Center(child: Text('لا يوجد مواعيد'));
+                            }
+                            final sortedAppointments = List<Map<String, dynamic>>.from(appointments);
+                            sortedAppointments.sort((a, b) {
+                              final dateA = DateTime.parse(a['date']);
+                              final dateB = DateTime.parse(b['date']);
+                              if (dateA != dateB) {
+                                return dateB.compareTo(dateA);
+                              }
+                              final timeA = a['start'];
+                              final timeB = b['start'];
+                              return timeB.compareTo(timeA);
+                            });
+                            return ListView.builder(
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              itemCount: sortedAppointments.length,
+                              itemBuilder: (context, index) {
+                                final appt = sortedAppointments[index];
+                                final serial = appt['serial'] ?? (index + 1);
+                                return Card(
+                                  margin: const EdgeInsets.symmetric(vertical: 6),
+                                  elevation: 2,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  child: ListTile(
+                                    leading: CircleAvatar(
+                                      backgroundColor: const Color(0xFF4AB8D8),
+                                      child: Text(
+                                        serial.toString(),
+                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                    title: Text(
+                                      (Localizations.localeOf(context).languageCode == 'ar' ? 'اليوم: ' : 'Day: ') + DateTime.parse(appt['date']).toLocal().toString().split(' ')[0]),
+                                    subtitle: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text("${Localizations.localeOf(context).languageCode == 'ar' ? 'من: ' : 'From: '}${appt['start']}"),
+                                        Text("${Localizations.localeOf(context).languageCode == 'ar' ? 'إلى: ' : 'To: '}${appt['end']}"),
+                                        Text((Localizations.localeOf(context).languageCode == 'ar' ? 'المريض: ' : 'Patient: ') + (appt['patientName'] ?? '')),
+                                         Text(
+                                           '${Localizations.localeOf(context).languageCode == 'ar' ? 'العيادة: ' : 'Clinic: '}F',
+                                           style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold),
+                                         ),
+                                      ],
+                                    ),
+                                    trailing: IconButton(
+                                      icon: const Icon(Icons.delete, color: Colors.red),
+                                      tooltip: 'حذف الموعد',
+                                      onPressed: () async {
+                                        final key = appt['key'];
+                                        if (key != null) {
+                                          final confirm = await showDialog<bool>(
+                                            context: context,
+                                            builder: (context) => AlertDialog(
+                                              title: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'تأكيد الحذف' : 'Confirm Deletion'),
+                                              content: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'هل أنت متأكد أنك تريد حذف هذا الموعد؟' : 'Are you sure you want to delete this appointment?'),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed: () => Navigator.of(context).pop(false),
+                                                  child: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'لا' : 'No'),
+                                                ),
+                                                TextButton(
+                                                  onPressed: () => Navigator.of(context).pop(true),
+                                                  child: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'نعم' : 'Yes'),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                          if (confirm == true) {
+                                            await _deleteAppointment(key);
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(
+                                                content: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'تم حذف الموعد بنجاح' : 'Appointment deleted successfully'),
+                                                duration: const Duration(seconds: 2),
+                                              ),
+                                            );
+                                          }
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                      ],
+                    ),
                   ),
+                  if (isWide) const SizedBox(width: 16),
+                  // قائمة العيادات الخارجية
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          Localizations.localeOf(context).languageCode == 'ar' ? 'مواعيد العيادات الخارجية' : 'Outpatient Appointments',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: isTablet ? 18 : 15,
+                            color: Colors.green[900],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Builder(
+                          builder: (context) {
+                            if (outpatientAppointments.isEmpty) {
+                              return const Center(child: Text('لا يوجد مواعيد'));
+                            }
+                            final sortedAppointments = List<Map<String, dynamic>>.from(outpatientAppointments);
+                            sortedAppointments.sort((a, b) {
+                              final dateA = DateTime.parse(a['date']);
+                              final dateB = DateTime.parse(b['date']);
+                              if (dateA != dateB) {
+                                return dateB.compareTo(dateA);
+                              }
+                              final timeA = a['start'];
+                              final timeB = b['start'];
+                              return timeB.compareTo(timeA);
+                            });
+                            return ListView.builder(
+                              shrinkWrap: true,
+                              physics: const NeverScrollableScrollPhysics(),
+                              itemCount: sortedAppointments.length,
+                              itemBuilder: (context, index) {
+                                final appt = sortedAppointments[index];
+                                final serial = appt['serial'] ?? (index + 1);
+                                return Card(
+                                  margin: const EdgeInsets.symmetric(vertical: 6),
+                                  elevation: 2,
+                                  color: Colors.green[50],
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  child: ListTile(
+                                    leading: CircleAvatar(
+                                      backgroundColor: Colors.green[700],
+                                      child: Text(
+                                        serial.toString(),
+                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                      ),
+                                    ),
+                                    title: Text(
+                                      (Localizations.localeOf(context).languageCode == 'ar' ? 'اليوم: ' : 'Day: ') + DateTime.parse(appt['date']).toLocal().toString().split(' ')[0]),
+                                    subtitle: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text("${Localizations.localeOf(context).languageCode == 'ar' ? 'من: ' : 'From: '}${appt['start']}"),
+                                        Text("${Localizations.localeOf(context).languageCode == 'ar' ? 'إلى: ' : 'To: '}${appt['end']}"),
+                                        Text((Localizations.localeOf(context).languageCode == 'ar' ? 'المريض: ' : 'Patient: ') + (appt['patientName'] ?? '')),
+                                        Text(
+                                          (Localizations.localeOf(context).languageCode == 'ar'
+                                              ? 'العيادة: '
+                                              : 'Clinic: ') + (appt['clinic'] ?? ''),
+                                          style: const TextStyle(color: Colors.teal, fontWeight: FontWeight.bold),
+                                        ),
+                                        Text(
+                                          Localizations.localeOf(context).languageCode == 'ar'
+                                              ? 'موعد عيادات خارجية'
+                                              : 'Outpatient Appointment',
+                                          style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
+                                    ),
+                                    trailing: IconButton(
+                                      icon: const Icon(Icons.delete, color: Colors.red),
+                                      tooltip: 'حذف الموعد',
+                                      onPressed: () async {
+                                        final key = appt['key'];
+                                        if (key != null) {
+                                          final confirm = await showDialog<bool>(
+                                            context: context,
+                                            builder: (context) => AlertDialog(
+                                              title: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'تأكيد الحذف' : 'Confirm Deletion'),
+                                              content: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'هل أنت متأكد أنك تريد حذف هذا الموعد؟' : 'Are you sure you want to delete this appointment?'),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed: () => Navigator.of(context).pop(false),
+                                                  child: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'لا' : 'No'),
+                                                ),
+                                                TextButton(
+                                                  onPressed: () => Navigator.of(context).pop(true),
+                                                  child: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'نعم' : 'Yes'),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                          if (confirm == true) {
+                                            final url = Uri.parse('http://localhost:3000/outpatientAppointments/$key');
+                                            await http.delete(url);
+                                            await _fetchOutpatientAppointments();
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(
+                                                content: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'تم حذف الموعد بنجاح' : 'Appointment deleted successfully'),
+                                                duration: const Duration(seconds: 2),
+                                              ),
+                                            );
+                                          }
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ];
+                if (isWide) {
+                  return Row(crossAxisAlignment: CrossAxisAlignment.start, children: children);
+                } else {
+                  return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [children[0], const SizedBox(height: 24), children[1]]);
+                }
+              },
+            ),
+// ...existing code...
           ],
         ),
       ),

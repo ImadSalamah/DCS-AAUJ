@@ -1,14 +1,12 @@
 import 'package:flutter/material.dart';
 import '../dashboard/student_dashboard.dart';
-import 'student_appointments_page.dart';
-import 'student_groups_page.dart';
-import '../Doctor/examined_patients_page.dart';
+import '../Student/examined_patients_page.dart';
 
 class StudentSidebar extends StatelessWidget {
   final Color primaryColor;
   final String? studentName;
   final String? studentImageUrl;
-  const StudentSidebar({super.key, this.primaryColor = const Color(0xFF2A7A94), this.studentName, this.studentImageUrl});
+  const StudentSidebar({super.key, this.primaryColor = const Color(0xFF2A7A94), this.studentName, this.studentImageUrl, required List<String> allowedFeatures});
 
   @override
   Widget build(BuildContext context) {
@@ -55,7 +53,7 @@ class StudentSidebar extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (context) => ExaminedPatientsPage(
+                  builder: (context) => StudentExaminedPatientsPage(
                     studentName: studentName,
                     studentImageUrl: studentImageUrl,
                   ),
@@ -63,27 +61,8 @@ class StudentSidebar extends StatelessWidget {
               );
             },
           ),
-          ListTile(
-            leading: const Icon(Icons.medical_services, color: Colors.green),
-            title: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'فحص المريض' : 'Examine Patient'),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const StudentGroupsPage()),
-              );
-            },
-          ),
-          // زر مواعيدي
-          ListTile(
-            leading: const Icon(Icons.calendar_today, color: Colors.orange),
-            title: Text(Localizations.localeOf(context).languageCode == 'ar' ? 'مواعيدي' : 'My Appointments'),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const StudentAppointmentsPage()),
-              );
-            },
-          ),
+      
+      
         ],
       ),
     );

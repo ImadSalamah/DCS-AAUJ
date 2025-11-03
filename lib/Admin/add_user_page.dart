@@ -1,6 +1,8 @@
+// ignore_for_file: deprecated_member_use
+
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_database/firebase_database.dart';
+import 'package:http/http.dart' as http;
+import 'package:cloudinary_public/cloudinary_public.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'dart:convert';
@@ -8,7 +10,6 @@ import 'package:provider/provider.dart';
 import '../../providers/language_provider.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'admin_scaffold.dart';
@@ -18,6 +19,7 @@ class AddUserPage extends StatefulWidget {
   final String? userImageUrl;
   final String Function(BuildContext, String) translate;
   final VoidCallback onLogout;
+  final List<Map<String, dynamic>> allUsers;
 
   const AddUserPage({
     super.key,
@@ -25,6 +27,7 @@ class AddUserPage extends StatefulWidget {
     this.userImageUrl,
     required this.translate,
     required this.onLogout,
+    required this.allUsers,
   });
 
   @override
@@ -54,7 +57,7 @@ class _AddUserPageState extends State<AddUserPage> {
 
   final Color primaryColor = const Color(0xFF2A7A94);
   final Color accentColor = const Color(0xFF4AB8D8);
-  final DatabaseReference _database = FirebaseDatabase.instance.ref();
+  // No Firebase, use REST API
   final ImagePicker _picker = ImagePicker();
 
   final Map<String, Map<String, String>> _translations = {
@@ -100,6 +103,8 @@ class _AddUserPageState extends State<AddUserPage> {
     'hide_password': {'ar': 'إخفاء كلمة المرور', 'en': 'Hide password'},
     'permission_denied': {'ar': 'تم رفض صلاحيات الوصول إلى المعرض', 'en': 'Gallery access denied'},
     'validation_email': {'ar': 'البريد الإلكتروني مستخدم بالفعل', 'en': 'Email already in use'},
+    'doctor_add_success': {'ar': 'تم إضافة الطبيب في جدول الأطباء', 'en': 'Doctor added to doctors table'},
+    'doctor_add_error': {'ar': 'فشل في إضافة الطبيب في جدول الأطباء', 'en': 'Failed to add doctor to doctors table'},
   };
 
   String _translate(String key) {
@@ -137,29 +142,18 @@ class _AddUserPageState extends State<AddUserPage> {
         );
         return;
       }
-
       final XFile? image = await _picker.pickImage(
         source: ImageSource.gallery,
         maxWidth: 1200,
         maxHeight: 1200,
         imageQuality: 85,
       );
-
       if (!mounted) return;
       if (image != null) {
         if (kIsWeb) {
           final bytes = await image.readAsBytes();
-          if (!mounted) return;
           setState(() => _patientImage = bytes);
         } else {
-          final bytes = await File(image.path).readAsBytes();
-          await FlutterImageCompress.compressWithList(
-            bytes,
-            minWidth: 800,
-            minHeight: 800,
-            quality: 70,
-          );
-          if (!mounted) return;
           setState(() => _patientImage = File(image.path));
         }
       }
@@ -200,13 +194,82 @@ class _AddUserPageState extends State<AddUserPage> {
   }
 
   Future<bool> _isUsernameUnique(String username) async {
-    final snapshot = await _database
-        .child('users')
-        .orderByChild('username')
-        .equalTo(username)
-        .once();
+    // جلب جميع المستخدمين ومقارنة اسم المستخدم محليًا
+    final response = await http.get(Uri.parse('http://localhost:3000/users'));
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      final exists = data.any((user) =>
+        (user['USERNAME']?.toString().toLowerCase() ?? '') == username.toLowerCase()
+      );
+      return !exists;
+    }
+    return false;
+  }
 
-    return snapshot.snapshot.value == null;
+  Future<String?> uploadImageUniversalToCloudinary(dynamic image) async {
+    const cloudName = 'dgc3hbhva';
+    const uploadPreset = 'uploads';
+    if (kIsWeb && image is Uint8List) {
+      var uri = Uri.parse('https://api.cloudinary.com/v1_1/$cloudName/image/upload');
+      var request = http.MultipartRequest('POST', uri);
+      request.fields['upload_preset'] = uploadPreset;
+      request.files.add(
+        http.MultipartFile.fromBytes('file', image, filename: 'user_image.png'),
+      );
+      var response = await request.send();
+      final respStr = await response.stream.bytesToString();
+      if (response.statusCode == 200) {
+        final jsonResp = jsonDecode(respStr);
+        return jsonResp['secure_url'];
+      } else {
+        debugPrint('Cloudinary error (web): ${response.statusCode}');
+        debugPrint('Cloudinary message: $respStr');
+        return null;
+      }
+    } else if (image is File) {
+      final cloudinary = CloudinaryPublic(cloudName, uploadPreset, cache: false);
+      try {
+        CloudinaryResponse response = await cloudinary.uploadFile(
+          CloudinaryFile.fromFile(image.path, resourceType: CloudinaryResourceType.Image),
+        );
+        return response.secureUrl;
+      } catch (e) {
+        debugPrint('Cloudinary error (file): $e');
+        return null;
+      }
+    } else {
+      debugPrint('Unsupported image type');
+      return null;
+    }
+  }
+
+  // 🔥 NEW FUNCTION: Add doctor to DOCTORS table
+  Future<void> _addDoctorToDoctorsTable(String doctorId) async {
+    try {
+      // تحضير بيانات الطبيب الخاصة بجدول DOCTORS
+      final doctorData = {
+        'DOCTOR_ID': int.parse(doctorId), // تحويل إلى رقم لأن الجدول يتطلب NUMBER
+        'ALLOWED_FEATURES': [], // قائمة فيتشرز افتراضية فارغة
+        'DOCTOR_TYPE': 'طبيب عام', // نوع افتراضي
+        'IS_ACTIVE': 1, // مفعل افتراضيًا
+      };
+
+      final response = await http.post(
+        Uri.parse('http://localhost:3000/doctors'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(doctorData),
+      );
+
+      if (response.statusCode != 201 && response.statusCode != 200) {
+        debugPrint('ADD DOCTOR ERROR: statusCode=${response.statusCode}, body=${response.body}');
+        throw Exception(_translate('doctor_add_error'));
+      }
+
+      debugPrint('✅ تم إضافة الطبيب في جدول الأطباء بنجاح - ID: $doctorId');
+    } catch (e) {
+      debugPrint('❌ خطأ في إضافة الطبيب في جدول الأطباء: $e');
+      throw Exception('${_translate('doctor_add_error')}: $e');
+    }
   }
 
   Future<void> _addUser() async {
@@ -243,22 +306,14 @@ class _AddUserPageState extends State<AddUserPage> {
       if (_role != 'patient') {
         final isUnique = await _isUsernameUnique(_usernameController.text.trim());
         if (!isUnique) {
-          throw FirebaseAuthException(
-            code: 'username-exists',
-            message: _translate('username_taken'),
-          );
+          throw Exception(_translate('username_taken'));
         }
       }
 
-      // تحويل الصورة إلى base64
-      String? imageBase64;
+      // رفع الصورة إلى Cloudinary
+      String? imageUrl;
       if (_patientImage != null) {
-        if (kIsWeb) {
-          imageBase64 = base64Encode(_patientImage as Uint8List);
-        } else {
-          final bytes = await (_patientImage as File).readAsBytes();
-          imageBase64 = base64Encode(bytes);
-        }
+        imageUrl = await uploadImageUniversalToCloudinary(_patientImage);
       }
 
       // إنشاء البريد الإلكتروني التلقائي للموظفين
@@ -266,50 +321,53 @@ class _AddUserPageState extends State<AddUserPage> {
           ? '${_usernameController.text.trim()}@patient.com'
           : '${_usernameController.text.trim()}@aaup.edu';
 
-      // إنشاء المستخدم في Firebase Auth
-      final auth = FirebaseAuth.instance;
-      final userCredential = await auth.createUserWithEmailAndPassword(
-        email: email,
-        password: _passwordController.text.trim(),
-      );
-
-      if (!mounted) return;
-      // تحضير بيانات المستخدم
-      final userData = {
-        'firstName': _firstNameController.text.trim(),
-        'fatherName': _fatherNameController.text.trim(),
-        'grandfatherName': _grandfatherNameController.text.trim(),
-        'familyName': _familyNameController.text.trim(),
-        'fullName': '${_firstNameController.text.trim()} ${_fatherNameController.text.trim()} ${_grandfatherNameController.text.trim()} ${_familyNameController.text.trim()}',
-        'username': _usernameController.text.trim(),
-        'idNumber': _idNumberController.text.trim(),
-        'birthDate': _birthDate?.millisecondsSinceEpoch,
-        'gender': _gender,
-        'role': _role,
-        'phone': _phoneController.text.trim(),
-        'address': _addressController.text.trim(),
-        'email': email,
-        'image': imageBase64,
-        'createdAt': ServerValue.timestamp,
-        'isActive': true,
-      };
-
-      // حفظ البيانات في Realtime Database
-      await _database.child('users/${userCredential.user!.uid}').set(userData);
-
-      // إذا كان موظفاً، نضيفه إلى مجموعة الموظفين
-      if (_role != 'patient') {
-        await _database.child('staff/${userCredential.user!.uid}').set({
-          'uid': userCredential.user!.uid,
-          'username': _usernameController.text.trim(),
-          'fullName': userData['fullName'],
-          'email': email,
-          'role': _role,
-        });
+      // 🔥 تحويل تنسيق التاريخ من yyyy-MM-dd إلى dd/MM/yyyy
+      String? formattedBirthDate;
+      if (_birthDate != null) {
+        formattedBirthDate = DateFormat('dd/MM/yyyy').format(_birthDate!);
       }
 
-      // إرسال بريد التحقق
-      await userCredential.user?.sendEmailVerification();
+      // 🔥 استخدام ID_NUMBER كـ USER_ID (يجب أن يكون رقميًا)
+      final userId = _idNumberController.text.trim();
+
+      // تحضير بيانات المستخدم
+      final userData = {
+        'USER_ID': userId, // نفس قيمة ID_NUMBER
+        'FIRST_NAME': _firstNameController.text.trim(),
+        'FATHER_NAME': _fatherNameController.text.trim(),
+        'GRANDFATHER_NAME': _grandfatherNameController.text.trim(),
+        'FAMILY_NAME': _familyNameController.text.trim(),
+        'FULL_NAME': '${_firstNameController.text.trim()} ${_fatherNameController.text.trim()} ${_grandfatherNameController.text.trim()} ${_familyNameController.text.trim()}',
+        'USERNAME': _usernameController.text.trim(),
+        'ID_NUMBER': userId, // نفس قيمة USER_ID
+        'BIRTH_DATE': formattedBirthDate, // 🔥 استخدام التنسيق الجديد
+        'GENDER': _gender,
+        'ROLE': _role,
+        'PHONE': _phoneController.text.trim(),
+        'ADDRESS': _addressController.text.trim(),
+        'EMAIL': email,
+        'IMAGE': imageUrl,
+        'CREATED_AT': DateTime.now().millisecondsSinceEpoch,
+        'IS_ACTIVE': 1,
+        'PASSWORD': _passwordController.text.trim(), 
+      };
+
+      // 1. إضافة المستخدم في جدول users
+      final response = await http.post(
+        Uri.parse('http://localhost:3000/users'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(userData),
+      );
+
+      if (response.statusCode != 201 && response.statusCode != 200) {
+        debugPrint('ADD USER ERROR: statusCode=${response.statusCode}, body=${response.body}');
+        throw Exception(_translate('add_error'));
+      }
+
+      // 2. إذا كان المستخدم طبيب، أضفه في جدول doctors أيضًا
+      if (_role == 'doctor') {
+        await _addDoctorToDoctorsTable(userId);
+      }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -317,23 +375,16 @@ class _AddUserPageState extends State<AddUserPage> {
       );
 
       Navigator.of(context).pop();
-    } on FirebaseAuthException catch (e) {
-      String errorMessage = _translate('add_error');
-      if (e.code == 'weak-password') {
-        errorMessage = _translate('validation_password_length');
-      } else if (e.code == 'email-already-in-use') {
-        errorMessage = _translate('validation_email');
-      } else if (e.code == 'username-exists') {
-        errorMessage = _translate('username_taken');
-      }
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(errorMessage)),
-      );
     } catch (e) {
       if (!mounted) return;
+      
+      String errorMessage = _translate('add_error');
+      if (e.toString().contains(_translate('doctor_add_error'))) {
+        errorMessage = _translate('doctor_add_error');
+      }
+      
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${_translate('add_error')}: $e')),
+        SnackBar(content: Text('$errorMessage: $e')),
       );
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -399,15 +450,19 @@ class _AddUserPageState extends State<AddUserPage> {
     Widget? prefixIcon,
     Widget? suffixIcon,
     int? maxLength,
+    List<TextInputFormatter>? inputFormatters,
   }) {
+    // إزالة كلمة "هذا الحقل مطلوب" من labelText إذا كانت موجودة
+    String cleanLabel = labelText.replaceAll(_translate('required_field'), '').trim();
     return TextFormField(
       controller: controller,
       keyboardType: keyboardType,
       obscureText: obscureText,
       maxLength: maxLength,
+      inputFormatters: inputFormatters,
       decoration: InputDecoration(
-        labelText: labelText,
-        labelStyle: TextStyle(color: primaryColor.withValues(alpha: 0.8)),
+        labelText: cleanLabel,
+        labelStyle: TextStyle(color: primaryColor.withOpacity(0.8)),
         prefixIcon: prefixIcon,
         suffixIcon: suffixIcon,
         filled: true,
@@ -433,9 +488,9 @@ class _AddUserPageState extends State<AddUserPage> {
         Padding(
           padding: const EdgeInsets.only(bottom: 8.0),
           child: Text(
-            '${_translate('gender')} ${_translate('required_field')}',
+            _translate('gender'),
             style: TextStyle(
-              color: primaryColor.withValues(alpha: 0.8),
+              color: primaryColor.withOpacity(0.8),
               fontSize: 16,
             ),
           ),
@@ -473,9 +528,9 @@ class _AddUserPageState extends State<AddUserPage> {
         Padding(
           padding: const EdgeInsets.only(bottom: 8.0),
           child: Text(
-            '	${_translate('user_type')} ${_translate('required_field')}',
+            _translate('user_type'),
             style: TextStyle(
-              color: primaryColor.withValues(alpha: 0.8),
+              color: primaryColor.withOpacity(0.8),
               fontSize: 16,
             ),
           ),
@@ -495,6 +550,10 @@ class _AddUserPageState extends State<AddUserPage> {
             DropdownMenuItem(
               value: 'doctor',
               child: Text(_translate('doctor')),
+            ),
+            const DropdownMenuItem(
+              value: 'nurse',
+              child: Text('ممرض / Nurse'),
             ),
             DropdownMenuItem(
               value: 'secretary',
@@ -528,6 +587,7 @@ class _AddUserPageState extends State<AddUserPage> {
       userImageUrl: widget.userImageUrl,
       primaryColor: primaryColor,
       accentColor: accentColor,
+      allUsers: widget.allUsers, // إضافة هذا السطر
       body: LayoutBuilder(
         builder: (context, constraints) {
           return Center(
@@ -643,14 +703,14 @@ class _AddUserPageState extends State<AddUserPage> {
                           ),
                           const SizedBox(height: 15),
 
-                          // اسم المستخدم وتاريخ الميلاد
+                          // مكان السكن وتاريخ الميلاد
                           Row(
                             children: [
                               Expanded(
                                 child: _buildTextFormField(
-                                  controller: _usernameController,
-                                  labelText: '${_translate('username')} ${_translate('required_field')}',
-                                  prefixIcon: Icon(Icons.person_pin, color: accentColor),
+                                  controller: _addressController,
+                                  labelText: '${_translate('address')} ${_translate('required_field')}',
+                                  prefixIcon: Icon(Icons.location_on, color: accentColor),
                                   validator: (value) {
                                     if (value == null || value.isEmpty) {
                                       return _translate('validation_required');
@@ -665,8 +725,8 @@ class _AddUserPageState extends State<AddUserPage> {
                                   onTap: _selectBirthDate,
                                   child: InputDecorator(
                                     decoration: InputDecoration(
-                                      labelText: '${_translate('birth_date')} ${_translate('required_field')}',
-                                      labelStyle: TextStyle(color: primaryColor.withValues(alpha: 0.8)),
+                                      labelText: _translate('birth_date'),
+                                      labelStyle: TextStyle(color: primaryColor.withOpacity(0.8)),
                                       prefixIcon: Icon(Icons.calendar_today, color: accentColor),
                                       filled: true,
                                       fillColor: Colors.grey[50],
@@ -679,7 +739,7 @@ class _AddUserPageState extends State<AddUserPage> {
                                     child: Text(
                                       _birthDate == null
                                           ? _translate('select_date')
-                                          : DateFormat('yyyy-MM-dd').format(_birthDate!),
+                                          : DateFormat('dd/MM/yyyy').format(_birthDate!), // 🔥 نفس التنسيق
                                       style: TextStyle(
                                         fontSize: 16,
                                         color: _birthDate == null ? Colors.grey[600] : Colors.black,
@@ -696,17 +756,40 @@ class _AddUserPageState extends State<AddUserPage> {
                           _buildGenderRadioButtons(),
                           const SizedBox(height: 15),
 
-                          // حقل نوع المستخدم (Dropdown)
-                          _buildUserTypeDropdown(),
+                          // رقم الهوية - يقبل 9 أرقام فقط
+                          _buildTextFormField(
+                            controller: _idNumberController,
+                            labelText: '${_translate('id_number')} ${_translate('required_field')}',
+                            keyboardType: TextInputType.number,
+                            maxLength: 9,
+                            prefixIcon: Icon(Icons.credit_card, color: accentColor),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(9),
+                            ],
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return _translate('validation_required');
+                              }
+                              if (value.length < 9) {
+                                return _translate('validation_id_length');
+                              }
+                              return null;
+                            },
+                          ),
                           const SizedBox(height: 15),
 
-                          // رقم الهاتف
+                          // رقم الهاتف - يقبل 10 أرقام فقط
                           _buildTextFormField(
                             controller: _phoneController,
                             labelText: '${_translate('phone')} ${_translate('required_field')}',
                             keyboardType: TextInputType.phone,
                             maxLength: 10,
                             prefixIcon: Icon(Icons.phone, color: accentColor),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                              LengthLimitingTextInputFormatter(10),
+                            ],
                             validator: (value) {
                               if (value == null || value.isEmpty) {
                                 return _translate('validation_required');
@@ -719,11 +802,15 @@ class _AddUserPageState extends State<AddUserPage> {
                           ),
                           const SizedBox(height: 15),
 
-                          // مكان السكن
+                          // حقل نوع المستخدم (Dropdown)
+                          _buildUserTypeDropdown(),
+                          const SizedBox(height: 15),
+
+                          // اسم المستخدم
                           _buildTextFormField(
-                            controller: _addressController,
-                            labelText: '${_translate('address')} ${_translate('required_field')}',
-                            prefixIcon: Icon(Icons.location_on, color: accentColor),
+                            controller: _usernameController,
+                            labelText: '${_translate('username')} ${_translate('required_field')}',
+                            prefixIcon: Icon(Icons.person_pin, color: accentColor),
                             validator: (value) {
                               if (value == null || value.isEmpty) {
                                 return _translate('validation_required');
@@ -732,24 +819,6 @@ class _AddUserPageState extends State<AddUserPage> {
                             },
                           ),
                           const SizedBox(height: 15),
-
-                          // رقم الهوية
-                          _buildTextFormField(
-                            controller: _idNumberController,
-                            labelText: '${_translate('id_number')} ${_translate('required_field')}',
-                            keyboardType: TextInputType.number,
-                            maxLength: 9,
-                            prefixIcon: Icon(Icons.credit_card, color: accentColor),
-                            validator: (value) {
-                              if (value == null || value.isEmpty) {
-                                return _translate('validation_required');
-                              }
-                              if (value.length < 9) {
-                                return _translate('validation_id_length');
-                              }
-                              return null;
-                            },
-                          ),
                         ],
                       ),
                     ),

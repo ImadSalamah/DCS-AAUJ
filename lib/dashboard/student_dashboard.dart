@@ -1,17 +1,15 @@
 // ignore_for_file: use_build_context_synchronously
 
 import 'package:flutter/material.dart';
-import 'package:firebase_database/firebase_database.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:provider/provider.dart';
 import 'dart:convert';
 import '../providers/language_provider.dart' hide UserRole;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../loginpage.dart' show UserRole, LoginPage;
 import 'role_guard.dart';
-import '../Student/student_groups_page.dart';
-import '../Student/student_appointments_page.dart';
-import '../Doctor/examined_patients_page.dart';
+import '../Student/student_add_patient_page.dart';
+import '../Student/student_xray_upload_page.dart';
+import '../Student/examined_patients_page.dart';
 
 class StudentDashboard extends StatelessWidget {
   const StudentDashboard({super.key});
@@ -35,9 +33,6 @@ class _StudentDashboardContent extends StatefulWidget {
 class _StudentDashboardState extends State<_StudentDashboardContent> {
   final Color primaryColor = const Color(0xFF2A7A94);
   final Color accentColor = const Color(0xFF4AB8D8);
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  late DatabaseReference _userRef;
-  late DatabaseReference _notificationsRef;
 
   String _userName = '';
   String _userImageUrl = '';
@@ -49,12 +44,12 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
   final int _maxRetries = 3;
 
   bool hasNewNotification = false;
-  String? _lastNotificationId; 
 
   final Map<String, Map<String, String>> _translations = {
     'student_dashboard': {'ar': 'لوحة الطالب', 'en': 'Student Dashboard'},
     'view_examinations': {'ar': 'عرض الفحوصات', 'en': 'View Examinations'},
     'examine_patient': {'ar': 'فحص المريض', 'en': 'Examine Patient'},
+    'add_patient': {'ar': 'إضافة مريض', 'en': 'Add Patient'},
     'notifications': {'ar': 'الإشعارات', 'en': 'Notifications'},
     'student': {'ar': 'طالب', 'en': 'Student'},
     'home': {'ar': 'الرئيسية', 'en': 'Home'},
@@ -76,169 +71,93 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
     'no_notifications': {'ar': 'لا توجد إشعارات', 'en': 'No notifications'},
     'close': {'ar': 'إغلاق', 'en': 'Close'},
     'my_appointments': {'ar': 'مواعيدي', 'en': 'My Appointments'},
+    'upload_xray': {'ar': 'رفع صورة الأشعة', 'en': 'Upload X-ray'},
   };
 
   @override
   void initState() {
     super.initState();
-    _loadLastNotificationId().then((_) {
-      _initializeReferences();
-      _setupRealtimeListener();
-      _loadData();
-      _listenForNotifications();
-    });
-
+    _loadStudentData();
   }
 
-  Future<void> _loadLastNotificationId() async {
-    final prefs = await SharedPreferences.getInstance();
-    _lastNotificationId = prefs.getString('lastNotificationId');
-  }
-
-  void _initializeReferences() {
-    final user = _auth.currentUser;
-    if (user != null) {
-      _userRef = FirebaseDatabase.instance.ref('users/${user.uid}');
-
-      _notificationsRef =
-          FirebaseDatabase.instance.ref('student_notifications/${user.uid}');
-    }
-  }
-
-  void _setupRealtimeListener() {
-    final user = _auth.currentUser;
-    if (user == null) {
+  Future<void> _loadStudentData() async {
       setState(() {
-        _userName = _translate(context, 'student');
-        _isLoading = false;
-      });
-      return;
-    }
-
-    _userRef.onValue.listen((event) {
-      final snapshot = event.snapshot;
-      if (!snapshot.exists) {
-        setState(() {
-          _userName = _translate(context, 'student');
-          _isLoading = false;
+      _isLoading = true;
           _hasError = false;
         });
-        return;
-      }
-
-      final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-      _updateUserData(data);
-    }, onError: (error) {
-      debugPrint('Realtime listener error: $error');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final userDataJson = prefs.getString('userData');
+      if (userDataJson == null) {
       setState(() {
         _isLoading = false;
         _hasError = true;
       });
-    });
-
-    _notificationsRef.onValue.listen((event) async {
-      final snapshot = event.snapshot;
-      if (snapshot.exists) {
-        final notifList = _parseSnapshot(snapshot);
-        setState(() {
-          notifications = notifList;
-        });
-        if (notifList.isNotEmpty) {
-          final latest = notifList.last;
-          final latestId = latest['id']?.toString() ?? latest['timestamp']?.toString();
-          if (latestId != null && _lastNotificationId != latestId) {
-            setState(() {
-              hasNewNotification = true;
-              _lastNotificationId = latestId;
-            });
-            final prefs = await SharedPreferences.getInstance();
-            await prefs.setString('lastNotificationId', latestId);
-            String bannerMsg;
-            if (latest['title'] != null) {
-              bannerMsg = latest['title'].toString();
-              if (latest['body'] != null && latest['body'].toString().trim().isNotEmpty) {
-                bannerMsg += '\n${latest['body']}';
-              }
-            } else {
-              bannerMsg = 'لديك إشعار جديد';
-            }
-            showDashboardBanner(
-              bannerMsg,
-              backgroundColor: Colors.blue.shade700,
-            );
-          }
-        }
+        return;
       }
-    });
-  }
-
-  Future<void> _loadData() async {
-    try {
-  
-      final notificationsSnapshot = await _notificationsRef.get();
-
+      final data = json.decode(userDataJson);
+      // الاسم الكامل من FULL_NAME أو تركيبة الأسماء
+      final fullName = (data['FULL_NAME'] ?? '').toString().trim();
+      String name = fullName;
+      if (name.isEmpty) {
+        final firstName = data['FIRST_NAME']?.toString().trim() ?? '';
+        final fatherName = data['FATHER_NAME']?.toString().trim() ?? '';
+        final grandfatherName = data['GRANDFATHER_NAME']?.toString().trim() ?? '';
+        final familyName = data['FAMILY_NAME']?.toString().trim() ?? '';
+        name = [
+          if (firstName.isNotEmpty) firstName,
+          if (fatherName.isNotEmpty) fatherName,
+          if (grandfatherName.isNotEmpty) grandfatherName,
+          if (familyName.isNotEmpty) familyName,
+        ].join(' ');
+      }
+      // الصورة من IMAGE إذا كانت رابط مباشر
+      final imageData = data['IMAGE']?.toString().trim() ?? '';
+      String imageUrl = '';
+      if (imageData.isNotEmpty && (imageData.startsWith('http://') || imageData.startsWith('https://'))) {
+        imageUrl = imageData;
+      }
       setState(() {
-        notifications = _parseSnapshot(notificationsSnapshot);
+        _userName = name.isNotEmpty ? name : _translate(context, 'student');
+        _userImageUrl = imageUrl;
+        _isLoading = false;
         _hasError = false;
       });
     } catch (e) {
-      debugPrint('Error loading data: $e');
       setState(() {
+        _isLoading = false;
         _hasError = true;
       });
     }
   }
 
-  List<Map<String, dynamic>> _parseSnapshot(DataSnapshot snapshot) {
-    if (!snapshot.exists) return [];
 
-    final List<Map<String, dynamic>> result = [];
-    final data = snapshot.value as Map<dynamic, dynamic>? ?? {};
-
-    data.forEach((key, value) {
-      if (value is Map<dynamic, dynamic>) {
-        result.add(Map<String, dynamic>.from(value));
-      }
-    });
-
-    return result;
+String _getCurrentUserId() {
+  // محاولة جلب الـ user ID من الـ provider أو الـ shared preferences
+  try {
+    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
+    if (languageProvider.currentUserId != null && languageProvider.currentUserId!.isNotEmpty) {
+      return languageProvider.currentUserId!;
+    }
+    
+    // بديل: جلب من البيانات المحفوظة
+    final prefs = SharedPreferences.getInstance();
+    final userDataJson = prefs.then((prefs) => prefs.getString('userData'));
+    final userData = json.decode(userDataJson as String);
+    return userData['USER_ID']?.toString() ?? '';
+    } catch (e) {
+    debugPrint('Error getting user ID: $e');
   }
-
-  void _updateUserData(Map<dynamic, dynamic> data) {
-    final firstName = data['firstName']?.toString().trim() ?? '';
-    final fatherName = data['fatherName']?.toString().trim() ?? '';
-    final grandfatherName = data['grandfatherName']?.toString().trim() ?? '';
-    final familyName = data['familyName']?.toString().trim() ?? '';
-
-    final fullName = [
-      if (firstName.isNotEmpty) firstName,
-      if (fatherName.isNotEmpty) fatherName,
-      if (grandfatherName.isNotEmpty) grandfatherName,
-      if (familyName.isNotEmpty) familyName,
-    ].join(' ');
-
-    final imageData = data['image']?.toString() ?? '';
-
-    setState(() {
-      _userName =
-          fullName.isNotEmpty ? fullName : _translate(context, 'student');
-      _userImageUrl =
-          imageData.isNotEmpty ? 'data:image/jpeg;base64,$imageData' : '';
-      _isLoading = false;
-      _hasError = false;
-    });
-  }
-
+  
+  return '';
+}
   String _translate(BuildContext context, String key) {
-    final languageProvider =
-        Provider.of<LanguageProvider>(context, listen: false);
-    return _translations[key]![languageProvider.currentLocale.languageCode] ??
-        '';
+    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
+    return _translations[key]![languageProvider.currentLocale.languageCode] ?? '';
   }
 
   bool _isArabic(BuildContext context) {
-    final languageProvider =
-        Provider.of<LanguageProvider>(context, listen: false);
+    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
     return languageProvider.currentLocale.languageCode == 'ar';
   }
 
@@ -247,8 +166,6 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
   }
 
   Future<void> _logout() async {
-    await _auth.signOut();
-    if (!mounted) return;
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(builder: (context) => const LoginPage()),
@@ -315,10 +232,6 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
         ScaffoldMessenger.of(context).clearMaterialBanners();
       }
     });
-  }
-
-  void _listenForNotifications() {
-   
   }
 
   @override
@@ -401,12 +314,16 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
                               radius: 32,
                               backgroundColor: Colors.white,
                               child: ClipOval(
-                                child: Image.memory(
-                                  base64Decode(_userImageUrl
-                                      .replaceFirst('data:image/jpeg;base64,', '')),
+                                child: Image.network(
+                                  _userImageUrl,
                                   width: 64,
                                   height: 64,
                                   fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) => Icon(
+                                    Icons.person,
+                                    size: 32,
+                                    color: accentColor,
+                                  ),
                                 ),
                               ),
                             )
@@ -452,38 +369,30 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
                     );
                   },
                 ),
+      // في student_dashboard.dart - تصحيح السطر 385
                 ListTile(
                   leading: Icon(Icons.assignment, color: primaryColor),
                   title: Text(_translate(context, 'view_examinations')),
                   onTap: () {
+    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
+    if (!languageProvider.isEnglish) {
+      languageProvider.setLocale(const Locale('en'));
+    }
                     Navigator.push(
                         context,
                         MaterialPageRoute(
-                            builder: (context) => const ExaminedPatientsPage()));
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.medical_services, color: Colors.green),
-                  title: Text(_translate(context, 'examine_patient')),
-                  onTap: () {
-                    Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (context) => const StudentGroupsPage()));
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.calendar_today, color: Colors.orange),
-                  title: Text(_translate(context, 'my_appointments')),
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const StudentAppointmentsPage(),
+        builder: (context) => StudentExaminedPatientsPage( // ✅ غير الاسم هنا
+          studentName: _userName,
+          studentImageUrl: _userImageUrl,
+          currentUserId: _getCurrentUserId(),
+          userAllowedFeatures: const ['examined_patients'],
+        ),
                       ),
                     );
                   },
                 ),
+               
+            
               ],
             ),
           ),
@@ -501,12 +410,16 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
                               radius: 32,
                               backgroundColor: Colors.white,
                               child: ClipOval(
-                                child: Image.memory(
-                                  base64Decode(_userImageUrl
-                                      .replaceFirst('data:image/jpeg;base64,', '')),
+                                child: Image.network(
+                                  _userImageUrl,
                                   width: 64,
                                   height: 64,
                                   fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) => Icon(
+                                    Icons.person,
+                                    size: 32,
+                                    color: accentColor,
+                                  ),
                                 ),
                               ),
                             )
@@ -544,22 +457,17 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
                   leading: Icon(Icons.assignment, color: primaryColor),
                   title: Text(_translate(context, 'view_examinations')),
                   onTap: () {
+                    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
+                    if (!languageProvider.isEnglish) {
+                      languageProvider.setLocale(const Locale('en'));
+                    }
                     Navigator.push(
                         context,
                         MaterialPageRoute(
-                            builder: (context) => const ExaminedPatientsPage()));
+                            builder: (context) => const StudentExaminedPatientsPage()));
                   },
                 ),
-                ListTile(
-                  leading: const Icon(Icons.medical_services, color: Colors.green),
-                  title: Text(_translate(context, 'examine_patient')),
-                  onTap: () {
-                    Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (context) => const StudentGroupsPage()));
-                  },
-                ),
+              
                 ListTile(
                   leading: const Icon(Icons.notifications, color: Colors.orange),
                   title: Text(_translate(context, 'notifications')),
@@ -618,14 +526,10 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
             ),
             const SizedBox(height: 20),
             ElevatedButton(
-              onPressed: () {
-                _loadData();
-                _setupRealtimeListener();
-              },
+              onPressed: _loadStudentData,
               style: ElevatedButton.styleFrom(
                 backgroundColor: primaryColor,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
               ),
               child: Text(
                 _translate(context, 'retry'),
@@ -645,37 +549,6 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
       );
     }
 
-    final user = _auth.currentUser;
-    if (user != null) {
-      return FutureBuilder<DataSnapshot>(
-        future: _userRef.get(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasData && snapshot.data != null) {
-            final data = snapshot.data!.value as Map<dynamic, dynamic>?;
-            final isActive = data != null && (data['isActive'] == true || data['isActive'] == 1);
-            if (!isActive) {
-              return const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(32.0),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.block, color: Colors.red, size: 60),
-                      SizedBox(height: 24),
-                      Text(
-                        'يرجى مراجعة إدارة عيادات الأسنان في الجامعة لتفعيل حسابك.',
-                        style: TextStyle(fontSize: 20, color: Colors.red, fontWeight: FontWeight.bold),
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            }
-          }
           final mediaQuery = MediaQuery.of(context);
           final isSmallScreen = mediaQuery.size.width < 350;
 
@@ -729,11 +602,16 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
                                             radius: isSmallScreen ? 30 : 40,
                                             backgroundColor: Colors.white.withAlpha((0.8 * 255).toInt()),
                                             child: ClipOval(
-                                              child: Image.memory(
-                                                base64Decode(_userImageUrl.replaceFirst('data:image/jpeg;base64,', '')),
+                                        child: Image.network(
+                                          _userImageUrl,
                                                 width: isSmallScreen ? 60 : 80,
                                                 height: isSmallScreen ? 60 : 80,
                                                 fit: BoxFit.cover,
+                                          errorBuilder: (context, error, stackTrace) => Icon(
+                                            Icons.person,
+                                            size: isSmallScreen ? 30 : 40,
+                                            color: accentColor,
+                                          ),
                                               ),
                                             ),
                                           )
@@ -792,208 +670,97 @@ class _StudentDashboardState extends State<_StudentDashboardContent> {
                                 _translate(context, 'view_examinations'),
                                 primaryColor,
                                 onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => const ExaminedPatientsPage(),
-                                    ),
-                                  );
-                                },
-                              ),
-                              _buildFeatureBox(
-                                context,
-                                Icons.medical_services,
-                                _translate(context, 'examine_patient'),
-                                Colors.green,
-                                onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => const StudentGroupsPage(),
-                                    ),
-                                  );
-                                },
-                              ),
-                              _buildFeatureBox(
-                                context,
-                                Icons.calendar_today,
-                                _translate(context, 'my_appointments'),
-                                Colors.orange,
-                                onTap: () {
-                                  Navigator.push(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (context) => const StudentAppointmentsPage(),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              );
-            },
-          );
-        },
-      );
+    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
+    if (!languageProvider.isEnglish) {
+      languageProvider.setLocale(const Locale('en'));
     }
-
-    final mediaQuery = MediaQuery.of(context);
-    final isSmallScreen = mediaQuery.size.width < 350;
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final isWide = constraints.maxWidth > 900;
-        final gridCount = isWide ? 4 : (constraints.maxWidth > 600 ? 3 : 2);
-        return Stack(
-          children: [
-            Container(
-              decoration: const BoxDecoration(
-                color: Colors.white,
-              ),
-            ),
-            SingleChildScrollView(
-              padding: EdgeInsets.only(bottom: mediaQuery.padding.bottom + 20),
-              child: Column(
-                children: [
-                  Container(
-                    margin: const EdgeInsets.all(20),
-                    height: isSmallScreen ? 180 : 200,
-                    decoration: BoxDecoration(
-                      image: const DecorationImage(
-                        image: AssetImage('lib/assets/backgrownd.png'),
-                        fit: BoxFit.cover,
-                      ),
-                      color: const Color(0x4D000000),
-                      borderRadius: BorderRadius.circular(15),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Colors.black12,
-                          blurRadius: 10,
-                          offset: Offset(0, 5),
-                        ),
-                      ],
-                    ),
-                    child: Stack(
-                      children: [
-                        Container(
-                          decoration: BoxDecoration(
-                            color: const Color(0x33000000),
-                            borderRadius: BorderRadius.circular(15),
-                          ),
-                        ),
-                        Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              _userImageUrl.isNotEmpty
-                                  ? CircleAvatar(
-                                      radius: isSmallScreen ? 30 : 40,
-                                      backgroundColor: Colors.white.withAlpha((0.8 * 255).toInt()),
-                                      child: ClipOval(
-                                        child: Image.memory(
-                                          base64Decode(_userImageUrl.replaceFirst('data:image/jpeg;base64,', '')),
-                                          width: isSmallScreen ? 60 : 80,
-                                          height: isSmallScreen ? 60 : 80,
-                                          fit: BoxFit.cover,
-                                        ),
-                                      ),
-                                    )
-                                  : CircleAvatar(
-                                      radius: isSmallScreen ? 30 : 40,
-                                      backgroundColor: Colors.white.withAlpha((0.8 * 255).toInt()),
-                                      child: Icon(
-                                        Icons.person,
-                                        size: isSmallScreen ? 30 : 40,
-                                        color: accentColor,
-                                      ),
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+        builder: (context) => StudentExaminedPatientsPage(
+          studentName: _userName,
+          studentImageUrl: _userImageUrl,
+          currentUserId: _getCurrentUserId(),
+          userAllowedFeatures: const ['examined_patients'],
+        ),
                                     ),
-                              const SizedBox(height: 15),
-                              Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 8),
-                                child: Text(
-                                  _userName,
-                                  style: TextStyle(
-                                    fontSize: isSmallScreen ? 16 : 20,
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
+                                  );
+                                },
                               ),
-                              const SizedBox(height: 5),
-                              Text(
-                                _translate(context, 'student'),
-                                style: TextStyle(
-                                  fontSize: isSmallScreen ? 14 : 16,
-                                  color: Colors.white,
-                                ),
+                              _buildFeatureBox(
+                                context,
+                          Icons.person_add,
+                          _translate(context, 'add_patient'),
+                          Colors.blue,
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                builder: (context) => const StudentAddPatientPage(),
+                                    ),
+                                  );
+                                },
                               ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: GridView.count(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      crossAxisCount: gridCount,
-                      crossAxisSpacing: 15,
-                      mainAxisSpacing: 15,
-                      childAspectRatio: 1.1,
-                      children: [
-                        _buildFeatureBox(
-                          context,
-                          Icons.assignment,
-                          _translate(context, 'view_examinations'),
-                          primaryColor,
-                          onTap: () {
+                      
+                              _buildFeatureBox(
+                                context,
+                          Icons.camera_alt,
+                          _translate(context, 'upload_xray'),
+                          Colors.purple,
+                          onTap: () async {
+                            try {
+                              final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
+                              final studentId = languageProvider.currentUserId;
+                              
+                              
+                              if (studentId == null || studentId.isEmpty) {
+                                // محاولة جلب المعرف من SharedPreferences كبديل
+                                final prefs = await SharedPreferences.getInstance();
+                                final userDataJson = prefs.getString('userData');
+                                if (userDataJson != null) {
+                                  final userData = json.decode(userDataJson);
+                                  final fallbackStudentId = userData['USER_ID']?.toString();
+                                  
+                                  if (fallbackStudentId != null && fallbackStudentId.isNotEmpty) {
+                                    // تحديث الـ Provider بالمعرف
+                                    languageProvider.setUserId(fallbackStudentId);
+                                    
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                        builder: (context) => StudentXrayUploadPage(studentId: fallbackStudentId),
+                                      ),
+                                    );
+                                    return;
+                                  }
+                                }
+                                
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: const Text('يرجى تسجيل الدخول مرة أخرى'),
+                                    backgroundColor: Colors.red,
+                                  )
+                                );
+                                return;
+                              }
+                              
                             Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (context) => const ExaminedPatientsPage(),
+                                  builder: (context) => StudentXrayUploadPage(studentId: studentId),
                               ),
                             );
-                          },
-                        ),
-                        _buildFeatureBox(
-                          context,
-                          Icons.medical_services,
-                          _translate(context, 'examine_patient'),
-                          Colors.green,
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => const StudentGroupsPage(),
-                              ),
+                            } catch (e) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('حدث خطأ، يرجى المحاولة مرة أخرى'),
+                                  backgroundColor: Colors.red,
+                                )
                             );
+                            }
                           },
                         ),
-                        _buildFeatureBox(
-                          context,
-                          Icons.calendar_today,
-                          _translate(context, 'my_appointments'),
-                          Colors.orange,
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => const StudentAppointmentsPage(),
-                              ),
-                            );
-                          },
-                        ),
+                   
                       ],
                     ),
                   ),
