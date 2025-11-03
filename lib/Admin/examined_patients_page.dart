@@ -283,6 +283,8 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
   final String _usersApi = 'http://localhost:3000/users';
   final String _clinicalProceduresApi = 'http://localhost:3000/clinical-procedures';
   final String _prescriptionsApi = 'http://localhost:3000/prescriptions';
+  // ✅ NEW: Add X-ray images API
+  final String _xrayImagesApi = 'http://localhost:3000/xray-images/patient';
 
   // Colors
   static const Color primaryColor = Color(0xFF2A7A94);
@@ -363,6 +365,12 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
     'no_clinical_procedures': 'No clinical procedures available',
     'edit_examination': 'Edit Examination',
     'child_dental_chart': 'Child Dental Chart (Primary Teeth)',
+    // ✅ NEW: X-ray images translations
+    'xray_images': 'X-ray Images',
+    'no_xray_images': 'No X-ray images available',
+    'xray_type': 'X-ray Type',
+    'uploaded_by': 'Uploaded By',
+    'uploaded_at': 'Uploaded At',
   };
 
   @override
@@ -711,6 +719,75 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
       }
     } catch (e) {
       debugPrint('❌ خطأ في جلب الإجراءات السريرية: $e');
+      return [];
+    }
+  }
+
+  // ✅ NEW: دالة لجلب صور الأشعة للمريض
+  Future<List<Map<String, dynamic>>> _getXrayImagesForPatient(String? patientId) async {
+    try {
+      debugPrint('🔄 جلب صور الأشعة للمريض: $patientId');
+      
+      if (patientId == null || patientId.isEmpty) {
+        debugPrint('❌ patientId فارغ');
+        return [];
+      }
+      
+      final Uri uri = Uri.parse('$_xrayImagesApi/$patientId');
+      debugPrint('🔗 رابط صور الأشعة: ${uri.toString()}');
+      
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+      
+      debugPrint('📡 استجابة السيرفر لصور الأشعة: ${response.statusCode}');
+      debugPrint('📦 بيانات الاستجابة: ${response.body}');
+      
+      if (response.statusCode == 200) {
+        final dynamic data = json.decode(response.body);
+        List<Map<String, dynamic>> xrayImages = [];
+        
+        debugPrint('🔍 نوع بيانات الاستجابة: ${data.runtimeType}');
+        
+        // Handle array response directly (based on your API response)
+        if (data is List) {
+          debugPrint('📋 البيانات هي قائمة تحتوي على ${data.length} عنصر');
+          for (var i = 0; i < data.length; i++) {
+            var item = data[i];
+            if (item is Map) {
+              // ✅ CORRECTED: Use IMAGE_URL from the response
+              final imageUrl = item['IMAGE_URL']?.toString() ?? '';
+              final studentName = item['STUDENT_NAME']?.toString() ?? 'Unknown';
+              final xrayType = item['XRAY_TYPE']?.toString() ?? 'Unknown';
+              final uploadedAt = item['UPLOADED_AT']?.toString() ?? '';
+              
+              debugPrint('📸 الصورة $i: $imageUrl');
+              debugPrint('   - الطالب: $studentName');
+              debugPrint('   - النوع: $xrayType');
+              debugPrint('   - التاريخ: $uploadedAt');
+              
+              if (imageUrl.isNotEmpty) {
+                xrayImages.add({
+                  'image_url': imageUrl,
+                  'student_name': studentName,
+                  'xray_type': xrayType,
+                  'uploaded_at': uploadedAt,
+                });
+              } else {
+                debugPrint('⚠️ رابط الصورة فارغ للعنصر $i');
+              }
+            }
+          }
+        } else {
+          debugPrint('❌ تنسيق البيانات غير متوقع: ${data.runtimeType}');
+        }
+        
+        debugPrint('✅ تم جلب ${xrayImages.length} صورة أشعة للمريض');
+        return xrayImages;
+      } else {
+        debugPrint('❌ فشل في جلب صور الأشعة: ${response.statusCode}');
+        return [];
+      }
+    } catch (e) {
+      debugPrint('❌ خطأ في جلب صور الأشعة: $e');
       return [];
     }
   }
@@ -3236,6 +3313,342 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
   }
 
   // =============================================
+  // 🔥 X-RAY IMAGES SECTION - NEW
+  // =============================================
+
+  // ✅ NEW: دالة لعرض صور الأشعة
+  Widget _buildXrayImagesCard(Map<String, dynamic> patientExam, BuildContext context) {
+    final patient = safeConvertMap(patientExam['patient']);
+    final String? patientId = patient['PATIENT_UID']?.toString() ?? patient['id']?.toString();
+
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: _getXrayImagesForPatient(patientId),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        
+        if (snapshot.hasError) {
+          debugPrint('❌ Error loading X-ray images: ${snapshot.error}');
+          return _buildErrorSection('Failed to load X-ray images');
+        }
+        
+        final xrayImages = snapshot.data ?? [];
+        if (xrayImages.isEmpty) {
+          return _buildDetailSection(
+            title: _translate('xray_images'),
+            children: [
+              Center(
+                child: Column(
+                  children: [
+                    Icon(Icons.photo_library, size: 48, color: Colors.grey[400]),
+                    const SizedBox(height: 8),
+                    Text(
+                      _translate('no_xray_images'),
+                      style: TextStyle(
+                        color: textSecondary,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        }
+
+        return _buildDetailSection(
+          title: '${_translate('xray_images')} (${xrayImages.length})',
+          children: [
+            _buildXrayImagesGrid(xrayImages, context),
+          ],
+        );
+      },
+    );
+  }
+
+  // ✅ NEW: بناء شبكة صور الأشعة
+  Widget _buildXrayImagesGrid(List<Map<String, dynamic>> xrayImages, BuildContext context) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+        childAspectRatio: 0.8,
+      ),
+      itemCount: xrayImages.length,
+      itemBuilder: (context, index) {
+        final image = xrayImages[index];
+        return _buildXrayImageCard(image, context);
+      },
+    );
+  }
+
+  // ✅ NEW: بناء بطاقة صورة الأشعة الفردية
+  Widget _buildXrayImageCard(Map<String, dynamic> image, BuildContext context) {
+    final String imageUrl = image['image_url']?.toString() ?? '';
+    final String xrayType = image['xray_type']?.toString() ?? 'Unknown';
+    final String uploadedAt = image['uploaded_at']?.toString() ?? '';
+
+    return Card(
+      elevation: 2,
+      child: InkWell(
+        onTap: () {
+          _showXrayImageDialog(context, imageUrl, xrayType);
+        },
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Image section
+            Expanded(
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(4),
+                    topRight: Radius.circular(4),
+                  ),
+                  color: Colors.grey[100],
+                ),
+                child: _buildXrayImageWithFallback(imageUrl),
+              ),
+            ),
+            
+            // Info section
+            Container(
+              padding: const EdgeInsets.all(8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    xrayType,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  
+                  const SizedBox(height: 2),
+                  Text(
+                    _formatXrayDate(uploadedAt),
+                    style: TextStyle(
+                      fontSize: 9,
+                      color: Colors.grey[500],
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ NEW: بناء صورة الأشعة مع حالات التحميل والفشل
+  Widget _buildXrayImageWithFallback(String imageUrl) {
+    if (imageUrl.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.broken_image, size: 40, color: Colors.grey[400]),
+            const SizedBox(height: 4),
+            Text(
+              'No Image',
+              style: TextStyle(
+                fontSize: 10,
+                color: Colors.grey[500],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Image.network(
+      imageUrl,
+      fit: BoxFit.cover,
+      width: double.infinity,
+      height: double.infinity,
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) return child;
+        return Center(
+          child: CircularProgressIndicator(
+            value: loadingProgress.expectedTotalBytes != null
+                ? loadingProgress.cumulativeBytesLoaded / 
+                  loadingProgress.expectedTotalBytes!
+                : null,
+          ),
+        );
+      },
+      errorBuilder: (context, error, stackTrace) {
+        return Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.error_outline, size: 30, color: Colors.red[300]),
+              const SizedBox(height: 4),
+              Text(
+                'Load Failed',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.red[400],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ✅ NEW: عرض صورة الأشعة في Dialog مع إمكانية التكبير
+  void _showXrayImageDialog(BuildContext context, String imageUrl, String title) {
+    if (imageUrl.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No image available')),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header
+            Container(
+              padding: const EdgeInsets.all(16),
+              color: Colors.black,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        color: Colors.white, 
+                        fontSize: 16, 
+                        fontWeight: FontWeight.bold
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ],
+              ),
+            ),
+            
+            // Image with InteractiveViewer for natural zooming
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                color: Colors.grey[900],
+                child: InteractiveViewer(
+                  panEnabled: true, // Allow panning
+                  boundaryMargin: const EdgeInsets.all(20),
+                  minScale: 0.5, // Minimum zoom level
+                  maxScale: 4.0, // Maximum zoom level
+                  child: Image.network(
+                    imageUrl,
+                    fit: BoxFit.contain,
+                    loadingBuilder: (context, child, loadingProgress) {
+                      if (loadingProgress == null) return child;
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            CircularProgressIndicator(
+                              value: loadingProgress.expectedTotalBytes != null
+                                  ? loadingProgress.cumulativeBytesLoaded / 
+                                    loadingProgress.expectedTotalBytes!
+                                  : null,
+                            ),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'Loading X-ray Image...',
+                              style: TextStyle(color: Colors.white),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                    errorBuilder: (context, error, stackTrace) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.error, size: 60, color: Colors.red),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'Failed to load X-ray image',
+                              style: TextStyle(color: Colors.white, fontSize: 18),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'URL: ${imageUrl.length > 50 ? '${imageUrl.substring(0, 50)}...' : imageUrl}',
+                              style: const TextStyle(color: Colors.white70, fontSize: 12),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+            
+            // Footer with zoom instructions
+            Container(
+              padding: const EdgeInsets.all(12),
+              color: Colors.black,
+              child: const Column(
+                children: [
+                  Text(
+                    'Pinch to zoom • Drag to pan',
+                    style: TextStyle(color: Colors.white60, fontSize: 14),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    'Double tap to reset zoom',
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ✅ NEW: تنسيق تاريخ صورة الأشعة
+  String _formatXrayDate(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return 'Unknown date';
+    
+    try {
+      final date = DateTime.parse(dateString);
+      return DateFormat('yyyy-MM-dd HH:mm').format(date);
+    } catch (e) {
+      return dateString;
+    }
+  }
+
+  // =============================================
   // 🔥 PATIENT DETAILS - UPDATED WITH ALL FEATURES
   // =============================================
 
@@ -3431,6 +3844,9 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
 
           // ✅ NEW: Clinical Procedures Section
           _buildClinicalProceduresCard(patientExam, context),
+
+          // ✅ NEW: X-ray Images Section
+          _buildXrayImagesCard(patientExam, context),
 
           // If no examination data exists
           if (examData.isEmpty && screeningData.isEmpty && dentalFormData.isEmpty)
