@@ -319,7 +319,6 @@ class _PrimaryExamBookingPageState extends State<PrimaryExamBookingPage> {
               SizedBox(height: 5),
               Text('التاريخ: ${selectedDate!.year}/${selectedDate!.month}/${selectedDate!.day}'),
               SizedBox(height: 12),
-              Text('سيتم مراجعة طلبك وإشعارك بالنتيجة', style: TextStyle(color: Colors.grey[600])),
             ],
           ),
           actions: [

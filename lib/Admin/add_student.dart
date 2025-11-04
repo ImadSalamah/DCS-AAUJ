@@ -776,7 +776,7 @@ class _AddDentalStudentPageState extends State<AddDentalStudentPage> {
 
       final studentData = {
         // الحقول كما هي في قاعدة البيانات
-        'USER_ID': _studentIdController.text.trim(),
+        'USER_ID': _idNumberController.text.trim(),
         'FIRST_NAME': _firstNameController.text.trim(),
         'FATHER_NAME': _fatherNameController.text.trim(),
         'GRANDFATHER_NAME': _grandfatherNameController.text.trim(),
@@ -784,7 +784,7 @@ class _AddDentalStudentPageState extends State<AddDentalStudentPage> {
         'FULL_NAME': '${_firstNameController.text.trim()} ${_fatherNameController.text.trim()} ${_grandfatherNameController.text.trim()} ${_familyNameController.text.trim()}',
         'USERNAME': _usernameController.text.trim(),
         'ID_NUMBER': _idNumberController.text.trim(),
-        'STUDENT_ID': _idNumberController.text.trim(),
+        'STUDENT_ID':_studentIdController.text.trim(),
         'BIRTH_DATE': birthDateFormatted, // الصيغة dd/MM/yyyy
         'GENDER': _gender,
         'ROLE': 'dental_student',

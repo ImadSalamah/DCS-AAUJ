@@ -285,6 +285,8 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
   final String _prescriptionsApi = 'http://localhost:3000/prescriptions';
   // ✅ NEW: Add X-ray images API
   final String _xrayImagesApi = 'http://localhost:3000/xray-images/patient';
+  // ✅ NEW: Add student assignments API
+  final String _patientAssignmentsApi = 'http://localhost:3000/patient_assignments';
 
   // Colors
   static const Color primaryColor = Color(0xFF2A7A94);
@@ -371,6 +373,13 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
     'xray_type': 'X-ray Type',
     'uploaded_by': 'Uploaded By',
     'uploaded_at': 'Uploaded At',
+    // ✅ NEW: Assigned students translations
+    'assigned_students': 'Assigned Students',
+    'no_assigned_students': 'No students assigned',
+    'student_name': 'Student Name',
+    'student_id': 'Student ID',
+    'university_id': 'University ID',
+    'assignment_date': 'Assignment Date',
   };
 
   @override
@@ -569,6 +578,67 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
     } catch (e) {
       debugPrint('❌ Error processing examination data: $e');
       return null;
+    }
+  }
+
+  // ✅ NEW: دالة لجلب الطلاب المعينين للمريض
+  Future<List<Map<String, dynamic>>> _getAssignedStudentsForPatient(String? patientId) async {
+    try {
+      debugPrint('🔄 جلب الطلاب المعينين للمريض: $patientId');
+      
+      if (patientId == null || patientId.isEmpty) {
+        debugPrint('❌ patientId فارغ');
+        return [];
+      }
+      
+      final Uri uri = Uri.parse('$_baseApiUrl/patient_assignments/$patientId');
+      debugPrint('🔗 رابط الطلاب المعينين: ${uri.toString()}');
+      
+      final response = await http.get(uri).timeout(const Duration(seconds: 10));
+      
+      debugPrint('📡 استجابة السيرفر للطلاب المعينين: ${response.statusCode}');
+      
+      if (response.statusCode == 200) {
+        final dynamic data = json.decode(response.body);
+        List<Map<String, dynamic>> assignedStudents = [];
+        
+        debugPrint('🔍 نوع بيانات الاستجابة للطلاب: ${data.runtimeType}');
+        
+        if (data is List) {
+          debugPrint('📋 البيانات هي قائمة تحتوي على ${data.length} طالب');
+          for (var item in data) {
+            if (item is Map) {
+              final studentData = {
+                'student_id': item['STUDENT_ID']?.toString() ?? '',
+                'first_name': item['FIRST_NAME']?.toString() ?? '',
+                'father_name': item['FATHER_NAME']?.toString() ?? '',
+                'grandfather_name': item['GRANDFATHER_NAME']?.toString() ?? '',
+                'family_name': item['FAMILY_NAME']?.toString() ?? '',
+                'student_university_id': item['STUDENT_UNIVERSITY_ID']?.toString() ?? '',
+                'assigned_date': item['ASSIGNED_DATE']?.toString() ?? '',
+                'assignment_id': item['ASSIGNMENT_ID']?.toString() ?? '',
+              };
+              
+              debugPrint('👨‍🎓 الطالب: ${studentData['first_name']} ${studentData['family_name']}');
+              debugPrint('   - الجامعة: ${studentData['student_university_id']}');
+              debugPrint('   - تاريخ التعيين: ${studentData['assigned_date']}');
+              
+              assignedStudents.add(studentData);
+            }
+          }
+        } else {
+          debugPrint('❌ تنسيق البيانات غير متوقع للطلاب: ${data.runtimeType}');
+        }
+        
+        debugPrint('✅ تم جلب ${assignedStudents.length} طالب معين للمريض');
+        return assignedStudents;
+      } else {
+        debugPrint('❌ فشل في جلب الطلاب المعينين: ${response.statusCode}');
+        return [];
+      }
+    } catch (e) {
+      debugPrint('❌ خطأ في جلب الطلاب المعينين: $e');
+      return [];
     }
   }
 
@@ -821,6 +891,143 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
         ),
       ],
     );
+  }
+
+  // ✅ NEW: Build assigned students section
+  Widget _buildAssignedStudentsCard(Map<String, dynamic> patientExam, BuildContext context) {
+    final patient = safeConvertMap(patientExam['patient']);
+    final String? patientId = patient['PATIENT_UID']?.toString() ?? patient['id']?.toString();
+
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: _getAssignedStudentsForPatient(patientId),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        
+        if (snapshot.hasError) {
+          debugPrint('❌ Error loading assigned students: ${snapshot.error}');
+          return _buildErrorSection('Failed to load assigned students');
+        }
+        
+        final assignedStudents = snapshot.data ?? [];
+        if (assignedStudents.isEmpty) {
+          return _buildDetailSection(
+            title: _translate('assigned_students'),
+            children: [
+              Center(
+                child: Column(
+                  children: [
+                    Icon(Icons.school, size: 48, color: Colors.grey[400]),
+                    const SizedBox(height: 8),
+                    Text(
+                      _translate('no_assigned_students'),
+                      style: TextStyle(
+                        color: textSecondary,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        }
+
+        return _buildDetailSection(
+          title: '${_translate('assigned_students')} (${assignedStudents.length})',
+          children: [
+            LayoutBuilder(
+              builder: (context, constraints) {
+                if (constraints.maxWidth > 800) {
+                  return _buildAssignedStudentsTable(assignedStudents);
+                } else {
+                  return SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: _buildAssignedStudentsTable(assignedStudents),
+                  );
+                }
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // ✅ NEW: Build assigned students table
+  Widget _buildAssignedStudentsTable(List<Map<String, dynamic>> assignedStudents) {
+    return DataTable(
+      columnSpacing: 16,
+      horizontalMargin: 8,
+      dataRowMaxHeight: 60,
+      headingRowHeight: 50,
+      columns: const [
+        DataColumn(
+          label: Text('Student Name', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+          tooltip: 'Full name of assigned student',
+        ),
+        DataColumn(
+          label: Text('University ID', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+          tooltip: 'Student university identification number',
+        ),
+        DataColumn(
+          label: Text('Assignment Date', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+          tooltip: 'Date when student was assigned to patient',
+        ),
+      ],
+      rows: assignedStudents.map((student) {
+        final fullName = '${student['first_name'] ?? ''} ${student['father_name'] ?? ''} ${student['grandfather_name'] ?? ''} ${student['family_name'] ?? ''}'.trim();
+        
+        return DataRow(
+          cells: [
+            DataCell(
+              Container(
+                constraints: const BoxConstraints(minWidth: 120),
+                child: Text(
+                  fullName.isNotEmpty ? fullName : 'Unknown Student',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: primaryColor,
+                  ),
+                ),
+              ),
+            ),
+            DataCell(
+              Container(
+                constraints: const BoxConstraints(minWidth: 100),
+                child: Text(
+                  student['student_university_id']?.toString() ?? 'Not specified',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ),
+            DataCell(
+              Container(
+                constraints: const BoxConstraints(minWidth: 100),
+                child: Text(
+                  _formatAssignmentDate(student['assigned_date']),
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ),
+          ],
+        );
+      }).toList(),
+    );
+  }
+
+  // ✅ NEW: Format assignment date
+  String _formatAssignmentDate(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return 'Not specified';
+    
+    try {
+      final date = DateTime.parse(dateString);
+      return DateFormat('yyyy-MM-dd HH:mm').format(date);
+    } catch (e) {
+      return dateString;
+    }
   }
 
   String _getFullName(Map<String, dynamic> patient) {
@@ -1464,7 +1671,6 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
       final url = patient['IQRAR'] ?? patient['iqrar'];
       availableImages.add({'title': 'Iqrar Document', 'url': url.toString()});
     }
-    
   
     
     if (availableImages.isEmpty) {
@@ -3818,6 +4024,9 @@ class _AdminExaminedPatientsPageState extends State<AdminExaminedPatientsPage> {
               _buildDetailItem(_translate('examination_date'), examDate),
             ],
           ),
+
+          // ✅ NEW: Assigned Students Section - Added right after Examination Information
+          _buildAssignedStudentsCard(patientExam, context),
 
           // ✅ Display examination data in organized sections
           if (examData.isNotEmpty)

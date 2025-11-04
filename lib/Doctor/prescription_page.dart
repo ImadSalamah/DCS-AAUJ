@@ -3,11 +3,13 @@
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
+import 'package:intl/intl.dart' hide TextDirection;
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
-import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import '../providers/language_provider.dart';
 import 'doctor_sidebar.dart';
+import 'package:flutter/services.dart' show rootBundle;
 
 class PrescriptionPage extends StatefulWidget {
   final String uid;
@@ -58,6 +60,9 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
   bool _isLoading = true;
 
   bool _isMounted = false;
+
+  // إضافة GlobalKey للـ Scaffold
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   List<String> get filteredMedicines {
     if (searchController.text.isEmpty) return medicines;
@@ -204,34 +209,37 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     } catch (e) {
     }
   }
+Future<void> _loadAllowedFeatures() async {
+  try {
+    final response = await http.get(Uri.parse('$apiBaseUrl/doctor_info'));
 
-  Future<void> _loadAllowedFeatures() async {
-    try {
-      final response = await http.get(Uri.parse('$apiBaseUrl/doctor_info'));
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (_isMounted) {
-          setState(() {
-            if (data['allowedFeatures'] is List) {
-              allowedFeatures = List<String>.from(data['allowedFeatures']);
-            } else if (data['allowedFeatures'] is Map) {
-              allowedFeatures = (data['allowedFeatures'] as Map).values.map((e) => e.toString()).toList();
-            } else {
-              allowedFeatures = [
-                'waiting_list',
-                'clinical_procedures_form',
-                'students_evaluation',
-                'supervision_groups',
-                'examined_patients',
-                'prescription',
-                'xray_request',
-                'assign_patients_to_students',
-              ];
-            }
-          });
-        }
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      if (_isMounted) {
+        setState(() {
+          if (data['allowedFeatures'] is List) {
+            allowedFeatures = List<String>.from(data['allowedFeatures']);
+          } else if (data['allowedFeatures'] is Map) {
+            allowedFeatures = (data['allowedFeatures'] as Map)
+                .values
+                .map((e) => e.toString())
+                .toList();
+          } else {
+            allowedFeatures = [
+              'waiting_list',
+              'clinical_procedures_form',
+              'students_evaluation',
+              'supervision_groups',
+              'examined_patients',
+              'prescription',
+              'xray_request',
+              'assign_patients_to_students',
+            ];
+          }
+        });
       }
-    } catch (e) {
+    } else {
+      // 👈 مهم جداً: لو مش 200 برضو عبي allowedFeatures
       if (_isMounted) {
         setState(() {
           allowedFeatures = [
@@ -247,7 +255,23 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
         });
       }
     }
+  } catch (e) {
+    if (_isMounted) {
+      setState(() {
+        allowedFeatures = [
+          'waiting_list',
+          'clinical_procedures_form',
+          'students_evaluation',
+          'supervision_groups',
+          'examined_patients',
+          'prescription',
+          'xray_request',
+          'assign_patients_to_students',
+        ];
+      });
+    }
   }
+}
 
   void searchPatient() {
     final query = patientSearchController.text.trim();
@@ -657,78 +681,126 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
     await addPrescriptionToOracle();
   }
 
-  Future<void> _generatePDF() async {
-    if (selectedPatientIndex == null || tempMedicines.isEmpty) return;
-    final foundPatient = foundPatients[selectedPatientIndex!];
-    final pdf = pw.Document();
-    
-    try {
-      final fontData = await rootBundle.load('assets/fonts/arial.ttf');
-      final ttf = pw.Font.ttf(fontData);
-      
-      final logoData = await rootBundle.load('assets/aauplogo.png');
-      final logoImage = pw.MemoryImage(logoData.buffer.asUint8List());
+ // دالة PDF محدثة مع دعم للغة العربية باستخدام خط Cairo
+Future<void> _generatePDF() async {
+  // تأكد في مريض مختار وفي أدوية مضافة
+  if (selectedPatientIndex == null || tempMedicines.isEmpty) return;
 
-      pdf.addPage(
-        pw.Page(
-          margin: const pw.EdgeInsets.all(24),
-          build: (pw.Context context) {
-            return pw.Column(
+  final foundPatient = foundPatients[selectedPatientIndex!];
+
+  try {
+    // 1) تحميل خط Cairo من مجلد الأصول
+    final cairoFont = pw.Font.ttf(
+      await rootBundle.load('assets/Cairo-Regular.ttf'),
+    );
+
+    // 2) إنشاء الوثيقة مع تفعيل الخط كـ base و bold
+    final pdf = pw.Document();
+
+    pdf.addPage(
+      pw.Page(
+        margin: const pw.EdgeInsets.all(24),
+        theme: pw.ThemeData.withFont(
+          base: cairoFont,
+          bold: cairoFont,
+        ),
+        build: (pw.Context context) {
+          return pw.Directionality(
+            textDirection: pw.TextDirection.rtl, // عشان العربي يظهر صح
+            child: pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                pw.Align(
-                  alignment: pw.Alignment.topLeft,
-                  child: pw.Image(logoImage, width: 90, height: 90),
-                ),
-                pw.SizedBox(height: 10),
                 pw.Text(
-                  'Medical Prescription',
-                  style: pw.TextStyle(font: ttf, fontSize: 22, fontWeight: pw.FontWeight.bold),
+                  'الوصفة الطبية',
+                  style: pw.TextStyle(
+                    fontSize: 22,
+                    fontWeight: pw.FontWeight.bold,
+                    font: cairoFont,
+                  ),
                 ),
                 pw.Divider(),
                 pw.SizedBox(height: 10),
+
+                // بيانات المريض
                 pw.Text(
-                  'Patient: ${_getPatientName(foundPatient)}'
-                  '\nAge: ${_getPatientAge(foundPatient)}'
-                  '\nID: ${_getPatientIdNumber(foundPatient)}',
-                  style: pw.TextStyle(font: ttf, fontSize: 15, fontWeight: pw.FontWeight.bold),
+                  'المريض: ${_getPatientName(foundPatient)}'
+                  '\nالعمر: ${_getPatientAge(foundPatient)}'
+                  '\nالرقم: ${_getPatientIdNumber(foundPatient)}',
+                  style: pw.TextStyle(
+                    fontSize: 15,
+                    fontWeight: pw.FontWeight.bold,
+                    font: cairoFont,
+                  ),
                 ),
                 pw.SizedBox(height: 12),
-                pw.Text('Medicines:', style: pw.TextStyle(font: ttf, fontSize: 15, fontWeight: pw.FontWeight.bold)),
-                pw.SizedBox(height: 8),
-                ...tempMedicines.map((med) => pw.Container(
-                  margin: const pw.EdgeInsets.only(bottom: 6),
-                  child: pw.Text(
-                    '- ${med['medicine']} | Quantity: ${med['quantity']} | Time: ${med['time']}',
-                    style: pw.TextStyle(font: ttf, fontSize: 14),
-                  ),
-                )),
-                pw.SizedBox(height: 16),
+
+                // عنوان الأدوية
                 pw.Text(
-                  'Doctor: ${_doctorName ?? ''}',
-                  style: pw.TextStyle(font: ttf, fontSize: 14),
+                  'الأدوية:',
+                  style: pw.TextStyle(
+                    fontSize: 15,
+                    fontWeight: pw.FontWeight.bold,
+                    font: cairoFont,
+                  ),
                 ),
                 pw.SizedBox(height: 8),
+
+                // قائمة الأدوية
+                ...tempMedicines.map(
+                  (med) => pw.Container(
+                    margin: const pw.EdgeInsets.only(bottom: 6),
+                    child: pw.Text(
+                      '- ${med['medicine']}  |  الكمية: ${med['quantity']}  |  الوقت: ${med['time']}',
+                      style: pw.TextStyle(
+                        fontSize: 14,
+                        font: cairoFont,
+                      ),
+                    ),
+                  ),
+                ),
+
+                pw.SizedBox(height: 16),
+
+                // اسم الدكتور
                 pw.Text(
-                  'Date: ${DateFormat('yyyy-MM-dd – HH:mm').format(DateTime.now())}',
-                  style: pw.TextStyle(font: ttf, fontSize: 12),
+                  'الطبيب: ${_doctorName ?? ''}',
+                  style: pw.TextStyle(
+                    fontSize: 14,
+                    font: cairoFont,
+                  ),
+                ),
+                pw.SizedBox(height: 8),
+
+                // التاريخ
+                pw.Text(
+                  'التاريخ: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now())}',
+                  style: pw.TextStyle(
+                    fontSize: 12,
+                    font: cairoFont,
+                  ),
                 ),
               ],
-            );
-          },
-        ),
-      );
+            ),
+          );
+        },
+      ),
+    );
 
-      await Printing.layoutPdf(onLayout: (format) async => pdf.save());
-    } catch (e) {
-      _showSnackBar('Error generating PDF', isError: true);
-    }
+    // 3) طباعة / عرض الـ PDF
+    await Printing.layoutPdf(onLayout: (format) async => pdf.save());
+  } catch (e) {
+    _showSnackBar('Error generating PDF: $e', isError: true);
   }
+}
 
   @override
   Widget build(BuildContext context) {
     const primaryColor = Color(0xFF2A7A94);
     const accentColor = Color(0xFF4AB8D8);
+    
+    // الحصول على language provider
+    final languageProvider = Provider.of<LanguageProvider>(context, listen: false);
+    final isArabic = languageProvider.currentLocale.languageCode == 'ar';
     
     if (_isLoading) {
       return Scaffold(
@@ -745,11 +817,14 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
       );
     }
     
-    return Scaffold(
-      drawer: allowedFeatures == null
-          ? const Drawer(child: Center(child: CircularProgressIndicator()))
-          : DoctorSidebar(
-            userRole: 'doctor',
+    return Directionality(
+      textDirection: isArabic ? TextDirection.rtl : TextDirection.ltr,
+      child: Scaffold(
+        key: _scaffoldKey,
+        drawer: allowedFeatures == null
+            ? const Drawer(child: Center(child: CircularProgressIndicator()))
+            : DoctorSidebar(
+              userRole: 'doctor',
               primaryColor: primaryColor,
               accentColor: accentColor,
               userName: _doctorName ?? '',
@@ -760,50 +835,244 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
               doctorUid: widget.uid,
               allowedFeatures: allowedFeatures!,
             ),
-      appBar: AppBar(
-        backgroundColor: primaryColor,
-        title: const Text('Prescription'),
-        centerTitle: true,
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Colors.black12,
-                      blurRadius: 8,
-                      offset: Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Search patient by name or ID:',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue,
-                        fontSize: 16,
+        appBar: AppBar(
+          backgroundColor: primaryColor,
+          title: Text(isArabic ? 'الوصفات الطبية' : 'Prescription'),
+          centerTitle: true,
+          leading: IconButton(
+            icon: const Icon(Icons.menu),
+            onPressed: () {
+              _scaffoldKey.currentState?.openDrawer();
+            },
+          ),
+        ),
+        body: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Colors.black12,
+                        blurRadius: 8,
+                        offset: Offset(0, 2),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isArabic ? 'البحث عن المريض بالاسم أو الرقم:' : 'Search patient by name or ID:',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blue,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: patientSearchController,
+                              decoration: InputDecoration(
+                                labelText: isArabic ? 'اسم المريض أو الرقم' : 'Patient name or ID',
+                                prefixIcon: const Icon(Icons.person_search),
+                                filled: true,
+                                fillColor: Colors.grey[100],
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                  borderSide: BorderSide.none,
+                                ),
+                              ),
+                              onChanged: (_) => searchPatient(),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            onPressed: isSearchingPatient ? null : searchPatient,
+                            icon: isSearchingPatient
+                                ? const CircularProgressIndicator()
+                                : const Icon(Icons.search, color: Colors.blue),
+                          ),
+                        ],
+                      ),
+                      
+                      if (patientError != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            patientError!,
+                            style: const TextStyle(color: Colors.red),
+                          ),
+                        ),
+                      
+                      if (foundPatients.isNotEmpty && selectedPatientIndex == null)
+                        Column(
+                          children: [
+                            const SizedBox(height: 12),
+                            Text(
+                              isArabic ? 'المرضى الموجودون:' : 'Found patients:',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.grey,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            ...foundPatients.asMap().entries.map((entry) {
+                              final i = entry.key;
+                              final patient = entry.value;
+                              return Card(
+                                margin: const EdgeInsets.symmetric(vertical: 4),
+                                color: Colors.grey[50],
+                                elevation: 1,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: ListTile(
+                                  leading: const Icon(Icons.person, color: Colors.blue),
+                                  title: Text(
+                                    _getPatientName(patient),
+                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                  ),
+                                  subtitle: Text(
+                                    '${isArabic ? 'الرقم:' : 'ID:'} ${_getPatientIdNumber(patient)}',
+                                  ),
+                                  selected: selectedPatientIndex == i,
+                                  onTap: () {
+                                    _safeSetState(() {
+                                      selectedPatientIndex = i;
+                                    });
+                                    final patientId = _getPatientIdNumber(patient);
+                                    fetchPatientPrescriptions(patientId);
+                                    FocusScope.of(context).unfocus();
+                                  },
+                                  trailing: selectedPatientIndex == i
+                                      ? const Icon(Icons.check_circle, color: Colors.green)
+                                      : null,
+                                ),
+                              );
+                            }),
+                          ],
+                        ),
+                      
+                      if (selectedPatientIndex != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.green[50],
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.green),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.check_circle, color: Colors.green),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        isArabic ? 'المريض المختار:' : 'Selected Patient:',
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.green,
+                                        ),
+                                      ),
+                                      Text(
+                                        _getPatientName(foundPatients[selectedPatientIndex!]),
+                                        style: const TextStyle(fontWeight: FontWeight.bold),
+                                      ),
+                                      Text(
+                                        '${isArabic ? 'الرقم:' : 'ID:'} ${_getPatientIdNumber(foundPatients[selectedPatientIndex!])}',
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                IconButton(
+                                  onPressed: () {
+                                    _safeSetState(() {
+                                      selectedPatientIndex = null;
+                                      prescriptions.clear();
+                                    });
+                                  },
+                                  icon: const Icon(Icons.clear, color: Colors.red),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      
+                      const Divider(height: 30),
+                      
+                      Text(
+                        isArabic ? 'اختر الدواء:' : 'Select medicine:',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blue,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      
+                      TextField(
+                        controller: searchController,
+                        decoration: InputDecoration(
+                          labelText: isArabic ? 'ابحث عن الدواء' : 'Search medicine',
+                          prefixIcon: const Icon(Icons.search),
+                          filled: true,
+                          fillColor: Colors.grey[100],
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                        onChanged: (_) => _safeSetState(() {}),
+                      ),
+                      
+                      const SizedBox(height: 12),
+                      
+                      DropdownButtonFormField<String>(
+                        isExpanded: true,
+                        initialValue: selectedMedicine,
+                        items: filteredMedicines.map((med) {
+                          return DropdownMenuItem(
+                            value: med,
+                            child: Text(med),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          _safeSetState(() {
+                            selectedMedicine = val;
+                          });
+                        },
+                        decoration: InputDecoration(
+                          labelText: isArabic ? 'اختر الدواء' : 'Select medicine',
+                          filled: true,
+                          fillColor: Colors.grey[100],
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
+                      
+                      if (selectedMedicine == 'Other')
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12),
                           child: TextField(
-                            controller: patientSearchController,
+                            controller: customController,
                             decoration: InputDecoration(
-                              labelText: 'Patient name or ID',
-                              prefixIcon: const Icon(Icons.person_search),
+                              labelText: isArabic ? 'اسم الدواء' : 'Medicine name',
                               filled: true,
                               fillColor: Colors.grey[100],
                               border: OutlineInputBorder(
@@ -811,506 +1080,319 @@ class _PrescriptionPageState extends State<PrescriptionPage> {
                                 borderSide: BorderSide.none,
                               ),
                             ),
-                            onChanged: (_) => searchPatient(),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          onPressed: isSearchingPatient ? null : searchPatient,
-                          icon: isSearchingPatient
-                              ? const CircularProgressIndicator()
-                              : const Icon(Icons.search, color: Colors.blue),
-                        ),
-                      ],
-                    ),
-                    
-                    if (patientError != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          patientError!,
-                          style: const TextStyle(color: Colors.red),
+                      
+                      const SizedBox(height: 12),
+                      
+                      TextField(
+                        controller: quantityController,
+                        decoration: InputDecoration(
+                          labelText: isArabic ? 'الكمية (اختياري)' : 'Quantity (optional)',
+                          prefixIcon: const Icon(Icons.format_list_numbered),
+                          filled: true,
+                          fillColor: Colors.grey[100],
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                          hintText: isArabic ? 'مثال: 30 كبسولة' : 'e.g. 30 capsules',
                         ),
                       ),
-                    
-                    if (foundPatients.isNotEmpty && selectedPatientIndex == null)
-                      Column(
+                      
+                      const SizedBox(height: 12),
+                      
+                      Text(
+                        isArabic ? 'وقت تناول الدواء:' : 'When to take the medicine:',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.blue,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      
+                      TextField(
+                        controller: timeController,
+                        decoration: InputDecoration(
+                          labelText: isArabic ? 'مثال: مرتين يومياً بعد الطعام' : 'e.g. Twice daily after meals',
+                          prefixIcon: const Icon(Icons.schedule),
+                          filled: true,
+                          fillColor: Colors.grey[100],
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
+                      
+                      const SizedBox(height: 16),
+                      
+                      Row(
                         children: [
-                          const SizedBox(height: 12),
-                          const Text(
-                            'Found patients:',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.grey,
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              icon: const Icon(Icons.add),
+                              onPressed: ((selectedMedicine != null && selectedMedicine != 'Other') ||
+                                      (selectedMedicine == 'Other' && customController.text.isNotEmpty)) &&
+                                  timeController.text.isNotEmpty
+                                  ? addMedicineToTempList
+                                  : null,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blueAccent,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              label: Text(isArabic ? 'إضافة دواء' : 'Add Medicine'),
                             ),
                           ),
-                          const SizedBox(height: 8),
-                          ...foundPatients.asMap().entries.map((entry) {
-                            final i = entry.key;
-                            final patient = entry.value;
-                            return Card(
-                              margin: const EdgeInsets.symmetric(vertical: 4),
-                              color: Colors.grey[50],
-                              elevation: 1,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: ListTile(
-                                leading: const Icon(Icons.person, color: Colors.blue),
-                                title: Text(
-                                  _getPatientName(patient),
-                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              icon: const Icon(Icons.save),
+                              onPressed: selectedPatientIndex != null && tempMedicines.isNotEmpty
+                                  ? addPrescription
+                                  : null,
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.green,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
                                 ),
-                                subtitle: Text(
-                                  'ID: ${_getPatientIdNumber(patient)}',
-                                ),
-                                selected: selectedPatientIndex == i,
-                                onTap: () {
-                                  _safeSetState(() {
-                                    selectedPatientIndex = i;
-                                  });
-                                  final patientId = _getPatientIdNumber(patient);
-                                  fetchPatientPrescriptions(patientId);
-                                  FocusScope.of(context).unfocus();
-                                },
-                                trailing: selectedPatientIndex == i
-                                    ? const Icon(Icons.check_circle, color: Colors.green)
-                                    : null,
                               ),
-                            );
-                          }),
+                              label: Text(isArabic ? 'حفظ الوصفة' : 'Save Prescription'),
+                            ),
+                          ),
                         ],
                       ),
-                    
-                    if (selectedPatientIndex != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.green[50],
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: Colors.green),
-                          ),
-                          child: Row(
+                      
+                      if (tempMedicines.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 20),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Icon(Icons.check_circle, color: Colors.green),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      'Selected Patient:',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.green,
-                                      ),
-                                    ),
-                                    Text(
-                                      _getPatientName(foundPatients[selectedPatientIndex!]),
-                                      style: const TextStyle(fontWeight: FontWeight.bold),
-                                    ),
-                                    Text(
-                                      'ID: ${_getPatientIdNumber(foundPatients[selectedPatientIndex!])}',
-                                    ),
-                                  ],
+                              Text(
+                                isArabic ? 'الأدوية المضافة:' : 'Added medicines:',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.blueAccent,
+                                  fontSize: 16,
                                 ),
                               ),
-                              IconButton(
-                                onPressed: () {
-                                  _safeSetState(() {
-                                    selectedPatientIndex = null;
-                                    prescriptions.clear();
-                                  });
-                                },
-                                icon: const Icon(Icons.clear, color: Colors.red),
+                              const SizedBox(height: 8),
+                              ...tempMedicines.asMap().entries.map((entry) {
+                                final index = entry.key;
+                                final med = entry.value;
+                                return Card(
+                                  color: Colors.blue[50],
+                                  margin: const EdgeInsets.symmetric(vertical: 4),
+                                  child: ListTile(
+                                    leading: const Icon(Icons.medication, color: Colors.blue),
+                                    title: Text(
+                                      med['medicine'] ?? '',
+                                      style: const TextStyle(fontWeight: FontWeight.bold),
+                                    ),
+                                    subtitle: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        if (med['quantity'] != null && med['quantity'] != '1')
+                                          Text('${isArabic ? 'الكمية:' : 'Quantity:'} ${med['quantity']}'),
+                                        Text('${isArabic ? 'الوقت:' : 'Time:'} ${med['time'] ?? ''}'),
+                                      ],
+                                    ),
+                                    trailing: IconButton(
+                                      onPressed: () => removeMedicineFromTempList(index),
+                                      icon: const Icon(Icons.delete, color: Colors.red),
+                                    ),
+                                  ),
+                                );
+                              }),
+                              const SizedBox(height: 16),
+                              Center(
+                                child: ElevatedButton.icon(
+                                  icon: const Icon(Icons.picture_as_pdf),
+                                  onPressed: _generatePDF,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.redAccent,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                  ),
+                                  label: Text(isArabic ? 'طباعة PDF' : 'Print PDF'),
+                                ),
                               ),
                             ],
                           ),
                         ),
-                      ),
-                    
-                    const Divider(height: 30),
-                    
-                    const Text(
-                      'Select medicine:',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue,
-                        fontSize: 16,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    
-                    TextField(
-                      controller: searchController,
-                      decoration: InputDecoration(
-                        labelText: 'Search medicine',
-                        prefixIcon: const Icon(Icons.search),
-                        filled: true,
-                        fillColor: Colors.grey[100],
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
-                      onChanged: (_) => _safeSetState(() {}),
-                    ),
-                    
-                    const SizedBox(height: 12),
-                    
-                    DropdownButtonFormField<String>(
-                      isExpanded: true,
-                      initialValue: selectedMedicine,
-                      items: filteredMedicines.map((med) {
-                        return DropdownMenuItem(
-                          value: med,
-                          child: Text(med),
-                        );
-                      }).toList(),
-                      onChanged: (val) {
-                        _safeSetState(() {
-                          selectedMedicine = val;
-                        });
-                      },
-                      decoration: InputDecoration(
-                        labelText: 'Select medicine',
-                        filled: true,
-                        fillColor: Colors.grey[100],
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
-                    ),
-                    
-                    if (selectedMedicine == 'Other')
-                      Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: TextField(
-                          controller: customController,
-                          decoration: InputDecoration(
-                            labelText: 'Medicine name',
-                            filled: true,
-                            fillColor: Colors.grey[100],
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide.none,
-                            ),
-                          ),
-                        ),
-                      ),
-                    
-                    const SizedBox(height: 12),
-                    
-                    TextField(
-                      controller: quantityController,
-                      decoration: InputDecoration(
-                        labelText: 'Quantity (optional)',
-                        prefixIcon: const Icon(Icons.format_list_numbered),
-                        filled: true,
-                        fillColor: Colors.grey[100],
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide.none,
-                        ),
-                        hintText: 'e.g. 30 capsules',
-                      ),
-                    ),
-                    
-                    const SizedBox(height: 12),
-                    
-                    const Text(
-                      'When to take the medicine:',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.blue,
-                        fontSize: 16,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    
-                    TextField(
-                      controller: timeController,
-                      decoration: InputDecoration(
-                        labelText: 'e.g. Twice daily after meals',
-                        prefixIcon: const Icon(Icons.schedule),
-                        filled: true,
-                        fillColor: Colors.grey[100],
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
-                    ),
-                    
-                    const SizedBox(height: 16),
-                    
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            icon: const Icon(Icons.add),
-                            onPressed: ((selectedMedicine != null && selectedMedicine != 'Other') ||
-                                    (selectedMedicine == 'Other' && customController.text.isNotEmpty)) &&
-                                timeController.text.isNotEmpty
-                                ? addMedicineToTempList
-                                : null,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.blueAccent,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            label: const Text('Add Medicine'),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            icon: const Icon(Icons.save),
-                            onPressed: selectedPatientIndex != null && tempMedicines.isNotEmpty
-                                ? addPrescription
-                                : null,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                            label: const Text('Save Prescription'),
-                          ),
-                        ),
-                      ],
-                    ),
-                    
-                    if (tempMedicines.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 20),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Added medicines:',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.blueAccent,
-                                fontSize: 16,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            ...tempMedicines.asMap().entries.map((entry) {
-                              final index = entry.key;
-                              final med = entry.value;
-                              return Card(
-                                color: Colors.blue[50],
-                                margin: const EdgeInsets.symmetric(vertical: 4),
-                                child: ListTile(
-                                  leading: const Icon(Icons.medication, color: Colors.blue),
-                                  title: Text(
-                                    med['medicine'] ?? '',
-                                    style: const TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                  subtitle: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      if (med['quantity'] != null && med['quantity'] != '1')
-                                        Text('Quantity: ${med['quantity']}'),
-                                      Text('Time: ${med['time'] ?? ''}'),
-                                    ],
-                                  ),
-                                  trailing: IconButton(
-                                    onPressed: () => removeMedicineFromTempList(index),
-                                    icon: const Icon(Icons.delete, color: Colors.red),
-                                  ),
-                                ),
-                              );
-                            }),
-                            const SizedBox(height: 16),
-                            Center(
-                              child: ElevatedButton.icon(
-                                icon: const Icon(Icons.picture_as_pdf),
-                                onPressed: _generatePDF,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.redAccent,
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                ),
-                                label: const Text('Print PDF'),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              
-              const SizedBox(height: 20),
-              
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Colors.black12,
-                      blurRadius: 8,
-                      offset: Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          selectedPatientIndex != null 
-                            ? 'Prescriptions for ${_getPatientName(foundPatients[selectedPatientIndex!])}:'
-                            : 'Prescriptions History:',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blue,
-                            fontSize: 16,
-                          ),
-                        ),
-                        if (selectedPatientIndex != null)
-                          IconButton(
-                            onPressed: () {
-                              final patientId = _getPatientIdNumber(foundPatients[selectedPatientIndex!]);
-                              fetchPatientPrescriptions(patientId);
-                            },
-                            icon: const Icon(Icons.refresh),
-                            tooltip: 'Refresh',
-                          ),
-                      ],
-                    ),
-                    
-                    const SizedBox(height: 10),
-                    
-                    if (prescriptions.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.all(16.0),
-                        child: Center(
-                          child: Text(
-                            'No prescriptions found',
-                            style: TextStyle(
-                              color: Colors.grey,
+                
+                const SizedBox(height: 20),
+                
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Colors.black12,
+                        blurRadius: 8,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            selectedPatientIndex != null 
+                              ? '${isArabic ? 'الوصفات لـ' : 'Prescriptions for'} ${_getPatientName(foundPatients[selectedPatientIndex!])}:'
+                              : isArabic ? 'سجل الوصفات' : 'Prescriptions History:',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue,
                               fontSize: 16,
                             ),
                           ),
-                        ),
+                          if (selectedPatientIndex != null)
+                            IconButton(
+                              onPressed: () {
+                                final patientId = _getPatientIdNumber(foundPatients[selectedPatientIndex!]);
+                                fetchPatientPrescriptions(patientId);
+                              },
+                              icon: const Icon(Icons.refresh),
+                              tooltip: isArabic ? 'تحديث' : 'Refresh',
+                            ),
+                        ],
                       ),
-                    
-                    if (prescriptions.isNotEmpty)
-                      Text(
-                        'Total prescriptions: ${prescriptions.length}',
-                        style: const TextStyle(
-                          color: Colors.blueAccent,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    
-                    const SizedBox(height: 10),
-                    
-                    ...prescriptions.map((prescription) => Card(
-                          color: _isPrescriptionOwner(prescription) 
-                              ? Colors.blue[50] 
-                              : Colors.grey[50],
-                          margin: const EdgeInsets.symmetric(vertical: 6),
-                          child: ListTile(
-                            leading: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(Icons.medication, color: Colors.green),
-                                if (_isPrescriptionOwner(prescription))
-                                  Padding(
-                                    padding: const EdgeInsets.only(left: 4.0),
-                                    child: Icon(Icons.verified, color: Colors.blue, size: 16),
-                                  ),
-                              ],
+                      
+                      const SizedBox(height: 10),
+                      
+                      if (prescriptions.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Center(
+                            child: Text(
+                              isArabic ? 'لا توجد وصفات' : 'No prescriptions found',
+                              style: const TextStyle(
+                                color: Colors.grey,
+                                fontSize: 16,
+                              ),
                             ),
-                            title: Text(
-                              prescription['medicine'] ?? '',
-                              style: const TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (selectedPatientIndex == null)
-                                  Text('For: ${prescription['patientName']}'),
-                                if (prescription['quantity'] != null && prescription['quantity'] != '1')
-                                  Text('Quantity: ${prescription['quantity']}'),
-                                Text('Time: ${prescription['time']}'),
-                                Text('Doctor: ${prescription['doctorName']}'),
-                                if (_isPrescriptionOwner(prescription))
-                                  Text('(Your prescription)', style: TextStyle(color: Colors.green, fontSize: 12)),
-                                Text(
-                                  'Date: ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.parse(prescription['createdAt']))}',
-                                  style: const TextStyle(fontSize: 12, color: Colors.grey),
-                                ),
-                              ],
-                            ),
-                            trailing: _isPrescriptionOwner(prescription)
-                                ? Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      IconButton(
-                                        onPressed: () {
-                                          _showEditPrescriptionDialog(prescription);
-                                        },
-                                        icon: const Icon(Icons.edit, color: Colors.blue),
-                                        tooltip: 'Edit Prescription',
-                                      ),
-                                      IconButton(
-                                        onPressed: () {
-                                          showDialog(
-                                            context: context,
-                                            builder: (context) => AlertDialog(
-                                              title: const Text('Delete Prescription'),
-                                              content: const Text('Are you sure you want to delete this prescription?'),
-                                              actions: [
-                                                TextButton(
-                                                  onPressed: () => Navigator.pop(context),
-                                                  child: const Text('Cancel'),
-                                                ),
-                                                TextButton(
-                                                  onPressed: () {
-                                                    Navigator.pop(context);
-                                                    deletePrescriptionFromOracle(prescription['prescriptionId']);
-                                                  },
-                                                  child: const Text(
-                                                    'Delete',
-                                                    style: TextStyle(color: Colors.red),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          );
-                                        },
-                                        icon: const Icon(Icons.delete, color: Colors.red),
-                                        tooltip: 'Delete Prescription',
-                                      ),
-                                    ],
-                                  )
-                                : null,
                           ),
-                        )),
-                  ],
+                        ),
+                      
+                      if (prescriptions.isNotEmpty)
+                        Text(
+                          '${isArabic ? 'إجمالي الوصفات:' : 'Total prescriptions:'} ${prescriptions.length}',
+                          style: const TextStyle(
+                            color: Colors.blueAccent,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      
+                      const SizedBox(height: 10),
+                      
+                      ...prescriptions.map((prescription) => Card(
+                            color: _isPrescriptionOwner(prescription) 
+                                ? Colors.blue[50] 
+                                : Colors.grey[50],
+                            margin: const EdgeInsets.symmetric(vertical: 6),
+                            child: ListTile(
+                              leading: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.medication, color: Colors.green),
+                                  if (_isPrescriptionOwner(prescription))
+                                    Padding(
+                                      padding: const EdgeInsets.only(left: 4.0),
+                                      child: Icon(Icons.verified, color: Colors.blue, size: 16),
+                                    ),
+                                ],
+                              ),
+                              title: Text(
+                                prescription['medicine'] ?? '',
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (selectedPatientIndex == null)
+                                    Text('${isArabic ? 'لـ:' : 'For:'} ${prescription['patientName']}'),
+                                  if (prescription['quantity'] != null && prescription['quantity'] != '1')
+                                    Text('${isArabic ? 'الكمية:' : 'Quantity:'} ${prescription['quantity']}'),
+                                  Text('${isArabic ? 'الوقت:' : 'Time:'} ${prescription['time']}'),
+                                  Text('${isArabic ? 'الطبيب:' : 'Doctor:'} ${prescription['doctorName']}'),
+                                  if (_isPrescriptionOwner(prescription))
+                                    Text(isArabic ? '(وصفتك)' : '(Your prescription)', style: TextStyle(color: Colors.green, fontSize: 12)),
+                                  Text(
+                                    '${isArabic ? 'التاريخ:' : 'Date:'} ${DateFormat('yyyy-MM-dd HH:mm').format(DateTime.parse(prescription['createdAt']))}',
+                                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                  ),
+                                ],
+                              ),
+                              trailing: _isPrescriptionOwner(prescription)
+                                  ? Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          onPressed: () {
+                                            _showEditPrescriptionDialog(prescription);
+                                          },
+                                          icon: const Icon(Icons.edit, color: Colors.blue),
+                                          tooltip: isArabic ? 'تعديل الوصفة' : 'Edit Prescription',
+                                        ),
+                                        IconButton(
+                                          onPressed: () {
+                                            showDialog(
+                                              context: context,
+                                              builder: (context) => AlertDialog(
+                                                title: Text(isArabic ? 'حذف الوصفة' : 'Delete Prescription'),
+                                                content: Text(isArabic ? 'هل أنت متأكد من حذف هذه الوصفة؟' : 'Are you sure you want to delete this prescription?'),
+                                                actions: [
+                                                  TextButton(
+                                                    onPressed: () => Navigator.pop(context),
+                                                    child: Text(isArabic ? 'إلغاء' : 'Cancel'),
+                                                  ),
+                                                  TextButton(
+                                                    onPressed: () {
+                                                      Navigator.pop(context);
+                                                      deletePrescriptionFromOracle(prescription['prescriptionId']);
+                                                    },
+                                                    child: Text(
+                                                      isArabic ? 'حذف' : 'Delete',
+                                                      style: const TextStyle(color: Colors.red),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            );
+                                          },
+                                          icon: const Icon(Icons.delete, color: Colors.red),
+                                          tooltip: isArabic ? 'حذف الوصفة' : 'Delete Prescription',
+                                        ),
+                                      ],
+                                    )
+                                  : null,
+                            ),
+                          )),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

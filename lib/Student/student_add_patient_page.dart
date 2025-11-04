@@ -30,12 +30,16 @@ class _StudentAddPatientPageState extends State<StudentAddPatientPage> {
   final _idNumberController = TextEditingController();
   final _addressController = TextEditingController();
   final _phoneController = TextEditingController();
-  // تم حذف حقل الإيميل بناءً على طلب المستخدم
   DateTime? _birthDate;
   String? _gender;
   dynamic _patientImage;
   dynamic _idImage;
   bool _isLoading = false;
+
+  // 🔥 متغيرات جديدة للتحقق الفوري
+  bool _checkingId = false;
+  String? _idValidationMessage;
+  bool _isIdValid = false;
 
   // أضف هذه المتغيرات للطالب
   String? _studentName;
@@ -48,7 +52,85 @@ class _StudentAddPatientPageState extends State<StudentAddPatientPage> {
   @override
   void initState() {
     super.initState();
-    _fetchStudentInfo(); // جلب معلومات الطالب
+    _fetchStudentInfo();
+    _setupIdNumberListener(); // 🔥 إضافة المستمع لحقل رقم الهوية
+  }
+
+  // 🔥 إعداد المستمع للتحقق الفوري
+  void _setupIdNumberListener() {
+    _idNumberController.addListener(() {
+      final text = _idNumberController.text;
+      if (text.length == 9) {
+        _checkIdNumberImmediately(text);
+      } else {
+        setState(() {
+          _idValidationMessage = null;
+          _isIdValid = false;
+        });
+      }
+    });
+  }
+
+  // 🔥 دالة التحقق الفوري من رقم الهوية
+  Future<void> _checkIdNumberImmediately(String idNumber) async {
+    if (_checkingId) return;
+    
+    setState(() {
+      _checkingId = true;
+      _idValidationMessage = 'جاري التحقق من رقم الهوية...';
+    });
+
+    try {
+      debugPrint('🔍 التحقق الفوري من رقم الهوية: $idNumber');
+
+      // 1. التحقق من وجود الرقم في جدول PATIENTS
+      final checkPatientsUrl = Uri.parse('http://localhost:3000/patients/check-id/$idNumber');
+      final checkPatientsResponse = await http.get(checkPatientsUrl);
+      
+      if (checkPatientsResponse.statusCode == 200) {
+        final result = json.decode(checkPatientsResponse.body);
+        if (result['exists'] == true) {
+          setState(() {
+            _idValidationMessage = '❌ رقم الهوية مسجل مسبقاً في النظام';
+            _isIdValid = false;
+          });
+          return;
+        }
+      }
+
+      // 2. التحقق من وجود الرقم في جدول PENDINGUSERS
+      final pendingCheckUrl = Uri.parse('http://localhost:3000/pendingUsers/check-id');
+      final pendingCheckResponse = await http.post(
+        pendingCheckUrl, 
+        body: json.encode({'idNumber': idNumber}), 
+        headers: {'Content-Type': 'application/json'}
+      );
+      
+      if (pendingCheckResponse.statusCode == 409) {
+        setState(() {
+          _idValidationMessage = '❌ رقم الهوية موجود في قائمة الانتظار';
+          _isIdValid = false;
+        });
+        return;
+      }
+
+      // إذا لم يوجد في أي مكان
+      setState(() {
+        _idValidationMessage = '✅ رقم الهوية متاح';
+        _isIdValid = true;
+      });
+
+    } catch (e) {
+      debugPrint('❌ خطأ في التحقق الفوري: $e');
+      setState(() {
+        _idValidationMessage = '⚠️ فشل التحقق - حاول مرة أخرى';
+        _isIdValid = false;
+      });
+    } finally {
+      setState(() {
+        _checkingId = false;
+      });
+    }
   }
 
   Future<void> _fetchStudentInfo() async {
@@ -270,6 +352,15 @@ class _StudentAddPatientPageState extends State<StudentAddPatientPage> {
 
   Future<void> _addPatient() async {
     if (_isLoading) return; // Prevent double tap
+    
+    // 🔥 التحقق من رقم الهوية قبل الإرسال
+    if (_idNumberController.text.length == 9 && !_isIdValid) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('يجب أن يكون رقم الهوية متاحاً قبل الإرسال')),
+      );
+      return;
+    }
+    
     setState(() => _isLoading = true);
     try {
       if (!_formKey.currentState!.validate()) {
@@ -294,33 +385,9 @@ class _StudentAddPatientPageState extends State<StudentAddPatientPage> {
       }
 
       final idNumber = _idNumberController.text.trim();
-      // تحقق من رقم الهوية عبر API
-      final checkUrl = Uri.parse('http://localhost:3000/patients/check-id');
-      final checkResponse = await http.post(checkUrl, body: json.encode({'idNumber': idNumber}), headers: {'Content-Type': 'application/json'});
-      debugPrint('DEBUG: Response status: ${checkResponse.statusCode}');
-      debugPrint('DEBUG: Response body: ${checkResponse.body}');
-      if (checkResponse.statusCode == 409) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('رقم الهوية مسجل مسبقاً أو الحساب مفعل من قبل')),
-        );
-        setState(() => _isLoading = false);
-        return;
-      }
-
-      // Check if ID exists in pending users
-      final pendingCheckUrl = Uri.parse('http://localhost:3000/pendingUsers/check-id');
-      final pendingCheckResponse = await http.post(pendingCheckUrl, body: json.encode({'idNumber': idNumber}), headers: {'Content-Type': 'application/json'});
-      debugPrint('DEBUG: Pending check response status: ${pendingCheckResponse.statusCode}');
-      debugPrint('DEBUG: Pending check response body: ${pendingCheckResponse.body}');
-      if (pendingCheckResponse.statusCode == 409) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('رقم الهوية موجود بالفعل في قائمة المعلقين')),
-        );
-        setState(() => _isLoading = false);
-        return;
-      }
+      
+      // 🔥 إزالة التحقق القديم - لأننا أصبحنا نتحقق فورياً
+      debugPrint('🚀 بدء إضافة المريض برقم الهوية: $idNumber');
 
       // جلب معرف الطالب الحالي (المستخدم المسجل دخول
       // ignore: use_build_context_synchronously
@@ -381,6 +448,7 @@ class _StudentAddPatientPageState extends State<StudentAddPatientPage> {
         'status': 'pending',
         'role': 'patient',
         'authUid': patientUid,
+        'studentId': studentId ?? 'unknown_student_id' // 🔥 إضافة معرف الطالب
       };
       final addUrl = Uri.parse('http://localhost:3000/pendingUsers');
       final addResponse = await http.post(addUrl, body: json.encode({'uid': patientUid, ...patientData}), headers: {'Content-Type': 'application/json'});
@@ -412,6 +480,8 @@ class _StudentAddPatientPageState extends State<StudentAddPatientPage> {
         _idImage = null;
         _birthDate = null;
         _gender = null;
+        _idValidationMessage = null; // 🔥 تنظيف رسالة التحقق
+        _isIdValid = false; // 🔥 إعادة تعيين حالة التحقق
       });
       // Navigate to quick booking page for new patient
       await Future.delayed(const Duration(milliseconds: 500));
@@ -494,6 +564,80 @@ class _StudentAddPatientPageState extends State<StudentAddPatientPage> {
         contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
       ),
       validator: validator,
+    );
+  }
+
+  // 🔥 دالة جديدة لحقل رقم الهوية مع التحقق الفوري
+  Widget _buildIdNumberField() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          height: 60,
+          child: TextFormField(
+            controller: _idNumberController,
+            keyboardType: TextInputType.number,
+            maxLength: 9,
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[0-9]'))
+            ],
+            decoration: InputDecoration(
+              labelText: _translate('id_number'),
+              labelStyle: TextStyle(color: primaryColor.withAlpha(204)),
+              prefixIcon: Icon(Icons.credit_card, color: accentColor),
+              filled: true,
+              fillColor: Colors.grey[50],
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: Colors.grey.shade300),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: BorderSide(color: primaryColor, width: 2),
+              ),
+              contentPadding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+            ),
+            validator: (value) {
+              if (value == null || value.isEmpty) {
+                return _translate('validation_required');
+              }
+              if (value.length < 9) {
+                return _translate('validation_id_length');
+              }
+              // 🔥 التحقق من أن الرقم متاح
+              if (!_isIdValid && value.length == 9) {
+                return 'يجب التحقق من رقم الهوية أولاً';
+              }
+              return null;
+            },
+          ),
+        ),
+        // 🔥 عرض رسالة التحقق
+        if (_idValidationMessage != null) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              if (_checkingId) 
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              if (_checkingId) const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _idValidationMessage!,
+                  style: TextStyle(
+                    color: _isIdValid ? Colors.green : Colors.red,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
     );
   }
 
@@ -824,29 +968,9 @@ class _StudentAddPatientPageState extends State<StudentAddPatientPage> {
                               ? Row(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
+                                    // 🔥 استبدال حقل رقم الهوية بالنسخة الجديدة
                                     Expanded(
-                                      child: SizedBox(
-                                        height: 60,
-                                        child: _buildTextFormField(
-                                          controller: _idNumberController,
-                                          labelText: _translate('id_number'),
-                                          keyboardType: TextInputType.number,
-                                          maxLength: 9,
-                                          prefixIcon: Icon(Icons.credit_card, color: accentColor),
-                                          validator: (value) {
-                                            if (value == null || value.isEmpty) {
-                                              return _translate('validation_required');
-                                            }
-                                            if (value.length < 9) {
-                                              return _translate('validation_id_length');
-                                            }
-                                            return null;
-                                          },
-                                          inputFormatters: [
-                                            FilteringTextInputFormatter.allow(RegExp(r'[0-9]'))
-                                          ],
-                                        ),
-                                      ),
+                                      child: _buildIdNumberField(),
                                     ),
                                     const SizedBox(width: 16),
                                     Expanded(
@@ -884,28 +1008,8 @@ class _StudentAddPatientPageState extends State<StudentAddPatientPage> {
                                 )
                               : Column(
                                   children: [
-                                    SizedBox(
-                                      height: 60,
-                                      child: _buildTextFormField(
-                                        controller: _idNumberController,
-                                        labelText: _translate('id_number'),
-                                        keyboardType: TextInputType.number,
-                                        maxLength: 9,
-                                        prefixIcon: Icon(Icons.credit_card, color: accentColor),
-                                        validator: (value) {
-                                          if (value == null || value.isEmpty) {
-                                            return _translate('validation_required');
-                                          }
-                                          if (value.length < 9) {
-                                            return _translate('validation_id_length');
-                                          }
-                                          return null;
-                                        },
-                                        inputFormatters: [
-                                          FilteringTextInputFormatter.allow(RegExp(r'[0-9]'))
-                                        ],
-                                      ),
-                                    ),
+                                    // 🔥 استبدال حقل رقم الهوية بالنسخة الجديدة
+                                    _buildIdNumberField(),
                                     const SizedBox(height: 10),
                                     SizedBox(
                                       height: 60,
@@ -1090,6 +1194,7 @@ class _StudentAddPatientPageState extends State<StudentAddPatientPage> {
 
   @override
   void dispose() {
+    _idNumberController.removeListener(() {}); // 🔥 إزالة المستمع
     _firstNameController.dispose();
     _fatherNameController.dispose();
     _grandfatherNameController.dispose();
